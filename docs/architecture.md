@@ -324,7 +324,7 @@ users ──1:1── user_profiles ──1:N── (版本历史:同表 version
 
 | 键模式 | TTL | 用途 | 对应需求 |
 |---|---|---|---|
-| `session:ctx:{session_id}` | 30 min(活动续期) | 会话上下文,多轮记忆 | US-20 |
+| `session:ctx:{session_id}` | 30 min(活动续期) | 会话上下文,多轮记忆(US-02 对话画像、US-20 咨询会话) | US-02、US-20 |
 | `profile:{user_id}` | 10 min | 画像热缓存;画像更新即失效 | US-05、BR-IMG-06 |
 | `quote:{code}` | 5 s | 行情缓存;值内含时间戳,读取时校验时效 | BR-DAT-03 |
 | `rate:{user_id}:{window}` | 窗口长度 | 限流计数(保护并发容量) | BR-PER-01 |
