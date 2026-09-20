@@ -44,3 +44,9 @@ class TooManyRequests(BizError):
     code = 42901
     http_status = 429
     message = "请求过于频繁"
+
+
+class LLMServiceError(BizError):
+    code = 50004
+    http_status = 500
+    message = "LLM 服务不可用"

@@ -17,6 +17,12 @@ class Settings(BaseSettings):
     jwt_secret: str = "dev-only-secret-do-not-use-in-prod"
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 1440
+    # 第三方大模型适配层(TC-02):API Key 仅经环境变量/.env 注入,禁止入库(AGENTS.md 规则 8)
+    llm_base_url: str = "https://api.deepseek.com"
+    llm_api_key: str = ""
+    llm_model: str = "deepseek-chat"
+    llm_timeout_seconds: float = 10.0
+    llm_max_retries: int = 2
 
 
 @lru_cache

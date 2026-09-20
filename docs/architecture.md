@@ -90,7 +90,7 @@
 | `app/models/` | SQLAlchemy ORM 模型与 Pydantic Schema(请求/响应) | 第 4 章 |
 | `app/core/` | 配置(环境变量)、JWT、日志、trace_id 中间件、限流、监控指标、异常处理器 | BR-CMP、BR-PER |
 | `app/cache/` | Redis 客户端封装与键规范(统一 TTL 管理、降级信号读写) | 第 4.4 节 |
-| `app/llm/` | 第三方大模型统一适配层(调用、超时、重试、用量日志) | TC-02、docs/ai-usage-log.md |
+| `app/llm/` | 第三方大模型统一适配层:`LLMClient` 抽象 + DeepSeek 实现(OpenAI 兼容;调用、超时、重试、用量日志),失败抛 50004 | TC-02、docs/ai-usage-log.md |
 
 ### 2.2 Agent 层(LangGraph)内部结构
 
@@ -361,6 +361,7 @@ users ──1:1── user_profiles ──1:N── (版本历史:同表 version
 | 50001 | 服务内部错误 | 未捕获异常 |
 | 50002 | 智能体执行失败 | 图执行异常(UC-07 扩展流程 3a) |
 | 50003 | 数据源不可用 | 适配器层全部数据源故障 |
+| 50004 | LLM 服务不可用 | 适配层调用失败/超时(重试耗尽)、鉴权失败、返回非 JSON |
 
 ### 5.2 接口清单
 
