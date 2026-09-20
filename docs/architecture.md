@@ -90,7 +90,7 @@
 | `app/models/` | SQLAlchemy ORM 模型与 Pydantic Schema(请求/响应) | 第 4 章 |
 | `app/core/` | 配置(环境变量)、JWT、日志、trace_id 中间件、限流、监控指标、异常处理器 | BR-CMP、BR-PER |
 | `app/cache/` | Redis 客户端封装与键规范(统一 TTL 管理、降级信号读写) | 第 4.4 节 |
-| `app/llm/` | 第三方大模型统一适配层(调用、超时、重试、用量日志) | TC-02、docs/ai-usage-log.md |
+| `app/llm/` | 第三方大模型统一适配层:`LLMClient` 抽象 + DeepSeek 实现(OpenAI 兼容;调用、超时、重试、用量日志),失败抛 50004 | TC-02、docs/ai-usage-log.md |
 
 ### 2.2 Agent 层(LangGraph)内部结构
 
@@ -324,7 +324,7 @@ users ──1:1── user_profiles ──1:N── (版本历史:同表 version
 
 | 键模式 | TTL | 用途 | 对应需求 |
 |---|---|---|---|
-| `session:ctx:{session_id}` | 30 min(活动续期) | 会话上下文,多轮记忆 | US-20 |
+| `session:ctx:{session_id}` | 30 min(活动续期) | 会话上下文,多轮记忆(US-02 对话画像、US-20 咨询会话) | US-02、US-20 |
 | `profile:{user_id}` | 10 min | 画像热缓存;画像更新即失效 | US-05、BR-IMG-06 |
 | `quote:{code}` | 5 s | 行情缓存;值内含时间戳,读取时校验时效 | BR-DAT-03 |
 | `rate:{user_id}:{window}` | 窗口长度 | 限流计数(保护并发容量) | BR-PER-01 |
@@ -361,6 +361,7 @@ users ──1:1── user_profiles ──1:N── (版本历史:同表 version
 | 50001 | 服务内部错误 | 未捕获异常 |
 | 50002 | 智能体执行失败 | 图执行异常(UC-07 扩展流程 3a) |
 | 50003 | 数据源不可用 | 适配器层全部数据源故障 |
+| 50004 | LLM 服务不可用 | 适配层调用失败/超时(重试耗尽)、鉴权失败、返回非 JSON |
 
 ### 5.2 接口清单
 
@@ -370,7 +371,7 @@ users ──1:1── user_profiles ──1:N── (版本历史:同表 version
 | POST | /api/v1/auth/login | 登录,返回 JWT | R-01 |
 | GET | /api/v1/profile/questionnaires/latest | 获取最新问卷 | US-01 |
 | POST | /api/v1/profile/questionnaire | 提交问卷作答,返回风险等级 | US-01、UC-01 |
-| POST | /api/v1/profile/dialog | 对话画像抽取(文本输入,返回抽取要素) | US-02 |
+| POST | /api/v1/profile/dialog | 对话画像抽取(多轮:session_id 可选,追问澄清,完成时返回画像更新 diff) | US-02 |
 | POST | /api/v1/profile/import | 持仓导入(文本/CSV) | US-03 |
 | GET | /api/v1/profile/report | 画像报告(含溯源与推断依据) | US-04 |
 | PUT | /api/v1/profile | 确认/修正画像 | US-04、BR-IMG-05 |

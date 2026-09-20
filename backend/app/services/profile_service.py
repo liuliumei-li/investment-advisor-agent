@@ -18,6 +18,14 @@ from app.services.risk_scoring import evaluate_answers, extract_profile_fields
 # 三来源仅问卷一种已收集时的画像置信度(UC-01 扩展 2a:允许先以低置信度画像继续)
 QUESTIONNAIRE_ONLY_CONFIDENCE = Decimal("0.60")
 
+# 对话来源置信度(US-02):仅对话 0.55(定性表述弱于结构化问卷);问卷+对话 0.85
+DIALOG_ONLY_CONFIDENCE = Decimal("0.55")
+QUESTIONNAIRE_DIALOG_CONFIDENCE = Decimal("0.85")
+
+# BR-IMG-03:画像建模三来源(不互相覆盖丢失,来源权重见 source_mix)
+ALL_PROFILE_SOURCES = ["问卷", "对话", "持仓"]
+SOURCE_KEY_TO_LABEL = {"questionnaire": "问卷", "dialog": "对话", "holdings": "持仓"}
+
 # BR-IMG-03:仅问卷单一来源时,提示其余来源信息不完整
 INCOMPLETE_SOURCES = ["对话", "持仓"]
 
@@ -96,6 +104,45 @@ class ProfileService:
             "created_at": response.created_at.isoformat(),
         }
 
+    async def merge_dialog_fields(self, user_id: int, slots: dict) -> dict:
+        """对话抽取要素合并入画像(US-02 AC-3/AC-4)。
+
+        元素级合并:已有值一致则采纳(不互相覆盖丢失);冲突保留原值并记录,
+        待用户在画像报告确认/修正(BR-IMG-05)。仅在画像有实际贡献时落库并递增版本。
+        """
+        profile = await self.profile_repo.get_by_user_id(user_id)
+        is_new = profile is None
+        if is_new:
+            if "risk_tolerance" not in slots:
+                raise ValidationFailed("风险承受信息不足,无法建立画像;请继续对话或完成风险测评问卷")
+            profile = UserProfile(user_id=user_id, version=1)
+
+        updates = build_dialog_updates(profile, slots)
+        contributed = [u for u in updates if u["applied"]]
+        if contributed:
+            if not is_new:
+                profile.version += 1  # BR-IMG-06:画像更新以版本递增留痕
+            for update in updates:
+                if update["applied"] and update["after"] != update["before"]:
+                    _apply_dialog_update(profile, update)
+            # BR-IMG-03:多来源综合建模,来源权重均分,置信度提升
+            has_questionnaire = bool((profile.source_mix or {}).get("questionnaire"))
+            if has_questionnaire:
+                profile.source_mix = {"questionnaire": 0.5, "dialog": 0.5}
+                profile.confidence = QUESTIONNAIRE_DIALOG_CONFIDENCE
+            else:
+                profile.source_mix = {"dialog": 1.0}
+                profile.confidence = DIALOG_ONLY_CONFIDENCE
+            profile.confirmed = False  # BR-IMG-05:确认/修正属 US-04 流程
+            await self.profile_repo.save(profile)
+            await self.session.commit()
+            await self.cache.delete(profile_cache_key(user_id))
+
+        incomplete = [
+            label for key, label in SOURCE_KEY_TO_LABEL.items() if key not in (profile.source_mix or {})
+        ]
+        return {"profile_updates": updates, "incomplete_sources": incomplete}
+
 
 def validate_answers(questions: list[dict], answers: list[dict]) -> None:
     """作答完整性校验:每题恰好一个答案,题目与选项必须存在。"""
@@ -152,3 +199,68 @@ def _submit_result(
         },
         "incomplete_sources": INCOMPLETE_SOURCES,
     }
+
+def build_dialog_updates(profile: UserProfile, slots: dict) -> list[dict]:
+    """计算对话要素与当前画像的合并 diff(AC-4 预览依据,纯函数便于单测)。
+
+    applied=True 表示采纳(画像无值或与对话值一致);False 表示冲突保留原值。
+    """
+    updates: list[dict] = []
+    risk = slots.get("risk_tolerance")
+    if risk:
+        level = risk["level"]
+        current = profile.risk_level.value if profile.risk_level is not None else None
+        updates.append(
+            _dialog_update("risk_level", current, level, risk["evidence"], current is None or current == level)
+        )
+    expectation = slots.get("return_expectation")
+    if expectation:
+        low, high = float(expectation["low"]), float(expectation["high"])
+        cur_low = float(profile.return_expectation_low) if profile.return_expectation_low is not None else None
+        cur_high = float(profile.return_expectation_high) if profile.return_expectation_high is not None else None
+        same = cur_low is not None and abs(cur_low - low) < 0.01 and abs(cur_high - high) < 0.01
+        updates.append(
+            _dialog_update(
+                "return_expectation", [cur_low, cur_high], [low, high], expectation["evidence"], cur_low is None or same
+            )
+        )
+    horizon = slots.get("investment_horizon")
+    if horizon:
+        value = horizon["value"]
+        applied = profile.investment_horizon is None or profile.investment_horizon == value
+        updates.append(
+            _dialog_update("investment_horizon", profile.investment_horizon, value, horizon["evidence"], applied)
+        )
+    habit = slots.get("holding_habit")
+    if habit:
+        summary = habit["summary"]
+        applied = profile.holding_habit_summary is None or profile.holding_habit_summary == summary
+        updates.append(
+            _dialog_update("holding_habit_summary", profile.holding_habit_summary, summary, habit["evidence"], applied)
+        )
+    return updates
+
+
+def _dialog_update(field: str, before, after, quote: str, applied: bool) -> dict:
+    return {
+        "field": field,
+        "before": before,
+        "after": after,
+        "source": "对话",
+        "quote": quote,
+        "applied": applied,
+        "conflict": not applied,
+    }
+
+
+def _apply_dialog_update(profile: UserProfile, update: dict) -> None:
+    field, after = update["field"], update["after"]
+    if field == "risk_level":
+        profile.risk_level = RiskLevel(after)
+    elif field == "return_expectation":
+        profile.return_expectation_low = _as_decimal(after[0])
+        profile.return_expectation_high = _as_decimal(after[1])
+    elif field == "investment_horizon":
+        profile.investment_horizon = after
+    elif field == "holding_habit_summary":
+        profile.holding_habit_summary = after
