@@ -10,5 +10,8 @@
 | 2026-09-20 | Claude Code | US-02 Step 2:对话画像抽取/追问引擎(dialog_profile_service)、画像元素级合并与冲突保留(profile_service)、BR-IMG-01 对话映射规则登记(requirements.md v1.1)与单测 | backend/app/services/dialog_profile_service.py、backend/app/services/profile_service.py、backend/app/cache/redis_client.py、backend/tests/helpers.py、backend/tests/unit/test_dialog_profile_service.py、docs/requirements.md、docs/architecture.md、本文档 |
 | 2026-09-20 | Claude Code | US-02 Step 3:POST /api/v1/profile/dialog 接口落地(Schema/DI/Controller)、集成测试、docs/api.md 登记;修复用户名正则致测试失败与 LLM Key 惰性失败 | backend/app/api/routers/profile.py、backend/app/schemas/profile.py、backend/app/llm/deepseek_client.py、backend/tests/integration/test_dialog_profile_api.py、docs/api.md、docs/architecture.md、本文档 |
 | 2026-09-20 | DeepSeek deepseek-chat(真实调用,3 次) | US-02 对话画像冒烟测试:单消息三要素抽取(25% 回撤 → C3)、追问澄清(C1 判断)、多轮合并与冲突保留验证 | 运行验证(HTTP + 真实 Redis),无代码变更;调用经 app/llm 适配层,用量由 app.llm 日志记录 |
+| 2026-09-20 | Claude Code | US-03 持仓历史分析:holdings/holding_snapshots 模型与迁移、三种导入方式(清单/CSV/文本 LLM 抽取)、分析引擎(集中度/资产分布/换手/BR-IMG-04 反推风险等级)、画像合并与偏差提示(≥2 档)、API 与测试(新增 45 例);requirements.md v1.2 补定量化规则 | backend/app/models/holding.py、backend/app/repositories/holding_repo.py、backend/app/services/holdings_service.py、backend/app/services/holdings_analysis.py、backend/app/services/profile_service.py、backend/app/api/routers/profile.py、backend/app/schemas/holdings.py、backend/alembic/、backend/pyproject.toml(新增 python-multipart)、backend/tests/、docs/requirements.md、docs/api.md、docs/architecture.md、本文档 |
+
+> 注:US-03 开发与测试全程使用 FakeLLM 替身,无真实大模型调用。
 
 说明:自 2026-09-20 起(US-02 冒烟测试)开发阶段已开始真实调用第三方大模型(DeepSeek),上表按次补充(模型、用途、时间、影响范围);开发辅助类 AI(Claude Code)调用与真实 LLM 调用分行记录。

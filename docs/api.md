@@ -3,7 +3,7 @@
 > 通用规范(统一响应信封、错误码表、鉴权约定)见 [architecture.md](architecture.md) §5.1;本文档登记**已实现**接口。
 > 完整接口规划见 architecture.md §5.2(未实现的接口不在此登记)。
 
-## 已实现接口(US-01、US-02,2026-09-20)
+## 已实现接口(US-01、US-02、US-03,2026-09-20)
 
 | 方法 | 路径 | 说明 | 鉴权 | 关联 |
 |---|---|---|---|---|
@@ -13,6 +13,8 @@
 | POST | /api/v1/profile/questionnaire | 提交问卷作答,返回风险等级与画像要素 | 是 | US-01 AC-2、UC-01 |
 | GET | /api/v1/profile/questionnaire/latest-response | 查看本人最近一次测评结果 | 是 | US-01 AC-3 |
 | POST | /api/v1/profile/dialog | 对话画像:多轮抽取/追问,完成时返回画像更新 diff | 是 | US-02、UC-01 |
+| POST | /api/v1/profile/import | 持仓导入并分析(清单粘贴 / 文本描述) | 是 | US-03、UC-01 |
+| POST | /api/v1/profile/import/csv | 持仓 CSV 文件导入并分析 | 是 | US-03、UC-01 |
 
 所有接口响应均为统一信封:`{ "code": 0, "message": "ok", "data": ..., "trace_id": "..." }`;`code=0` 表示成功,`trace_id` 同时写入响应头 `X-Trace-Id`。
 
@@ -343,6 +345,82 @@
 | 40101 | 401 | 未认证 |
 | 40102 | 401 | Token 过期 |
 | 50004 | 500 | LLM 服务不可用(超时/鉴权失败/返回异常,重试耗尽) |
+
+---
+
+## 7. 持仓导入与分析(US-03)
+
+两种入口:`POST /api/v1/profile/import`(JSON 请求体:清单粘贴 / 文本描述)与 `POST /api/v1/profile/import/csv`(multipart 文件)。每次导入生成一个快照批次并立即执行分析:集中度、资产类别分布、换手特征(对比最近两个快照)、实际持仓风险等级(BR-IMG-04 股票类占比矩阵反推);分析结论并入画像(持仓习惯摘要、来源混合与置信度),自评风险等级与持仓实际水平偏差 ≥2 档时返回 `risk_deviation` 提示(AC-3)。无画像时以持仓推导风险等级初始化画像(持仓可作为首个画像来源)。
+
+**请求头**:`Authorization: Bearer <access_token>`
+
+**请求体(`/import`,mode=list 清单粘贴)**
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| mode | string | 是 | `list` / `text` |
+| holdings | array | mode=list 时必填 | 每条:`asset_type`(stock/etf/cb/fund,支持中文:股票/ETF/可转债/基金)、`code`/`name`(至少其一)、`quantity`(正数)、`cost_price`(正数) |
+| text | string | mode=text 时必填 | 自然语言持仓描述(≤5000 字),经 LLM 抽取结构化持仓 |
+
+**请求体(`/import/csv`)**:multipart/form-data 文件字段 `file`(≤1MB)。表头支持中英文别名(如 `asset_type`/`资产类别`,`code`/`代码`,`name`/`名称`,`quantity`/`数量`,`cost_price`/`成本价`),编码支持 UTF-8(含 BOM)与 GBK。
+
+**成功响应(200)**
+
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "snapshot_id": 3,
+    "source": "list",
+    "holding_count": 2,
+    "analysis": {
+      "total_market_value": 154000,
+      "holding_count": 2,
+      "top_holdings": [
+        {"code": "600519", "name": "贵州茅台", "asset_type": "stock", "market_value": 150000, "share": 0.974}
+      ],
+      "concentration": {"top1_share": 0.974, "top3_share": 0.974, "level": "高"},
+      "asset_distribution": [
+        {"asset_type": "stock", "label": "股票", "market_value": 150000, "count": 1, "share": 0.974}
+      ],
+      "stock_share": 0.974,
+      "inferred_risk_level": "C5"
+    },
+    "turnover": {
+      "has_history": false,
+      "summary": "暂无历史快照,换手特征待下次导入后对比"
+    },
+    "profile_updates": [
+      {"field": "risk_level", "before": null, "after": "C5", "source": "持仓", "applied": true, "conflict": false}
+    ],
+    "incomplete_sources": ["问卷", "对话"],
+    "risk_deviation": null
+  }
+}
+```
+
+`risk_deviation` 非空示例(自评 C1、持仓实际 C5,偏差 ≥2 档):
+
+```json
+{
+  "assessed_risk_level": "C1",
+  "assessed_risk_level_name": "保守型",
+  "portfolio_risk_level": "C5",
+  "portfolio_risk_level_name": "激进型",
+  "stock_share": 0.974,
+  "message": "自评风险等级(保守型)与实际持仓风险水平(激进型,股票类资产占比 97.4%)偏差明显,建议在画像报告中确认或修正风险等级"
+}
+```
+
+**错误**
+
+| code | HTTP | 场景 |
+|---|---|---|
+| 40001 | 400 | 清单为空;条目缺代码/名称;资产类别无法识别;数量/成本价缺失、非正数或格式错误(提示带条目位置);CSV 缺少资产类别列、编码无法识别、文件过大(>1MB);文本描述未识别到持仓或抽取结果缺项 |
+| 40101 | 401 | 未认证 |
+| 40102 | 401 | Token 过期 |
+| 50004 | 500 | LLM 服务不可用(文本描述抽取) |
 
 ---
 
