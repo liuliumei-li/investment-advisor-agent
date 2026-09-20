@@ -247,16 +247,28 @@ users ──1:1── user_profiles ──1:N── (版本历史:同表 version
 | questionnaires | id, title, version, questions(JSON:题目/选项/维度/分值), created_at |
 | questionnaire_responses | id, user_id FK, questionnaire_id FK, answers(JSON), score(INT), risk_level, created_at |
 
-**holdings 持仓**(US-03)
+**holdings 持仓**(US-03,已实现)
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | BIGINT PK | |
+| snapshot_id | BIGINT FK → holding_snapshots.id | 所属导入批次(每次导入一个批次,最新批次 = 当前持仓) |
+| user_id | BIGINT FK | |
+| asset_type | ENUM('stock','etf','cb','fund') | 资产类别 |
+| code / name | VARCHAR(20) / VARCHAR(50) | 代码与名称(至少其一) |
+| quantity / cost_price | NUMERIC(16,4) / NUMERIC(12,4) | 数量与成本价(必填正数) |
+| created_at | TIMESTAMP | 落库时间 |
+
+**holding_snapshots 持仓导入快照**(US-03,已实现)
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | id | BIGINT PK | |
 | user_id | BIGINT FK | |
-| asset_type | ENUM('stock','etf','cb','fund') | 资产类别 |
-| code / name | VARCHAR(20) / VARCHAR(50) | 代码与名称 |
-| quantity / cost_price | NUMERIC | 数量与成本价 |
-| updated_at | TIMESTAMP | 导入/更新时间 |
+| source | VARCHAR(20) | 导入方式:list / csv / text |
+| created_at | TIMESTAMP | 导入时间 |
+
+> 换手特征(US-03 AC-2)基于最近两个快照对比;此设计相对基线规划新增快照维度(基线规划仅表达"最新持仓"语义)。
 
 **chat_sessions / chat_messages 会话与消息**(US-20 上下文记忆)
 
@@ -372,7 +384,8 @@ users ──1:1── user_profiles ──1:N── (版本历史:同表 version
 | GET | /api/v1/profile/questionnaires/latest | 获取最新问卷 | US-01 |
 | POST | /api/v1/profile/questionnaire | 提交问卷作答,返回风险等级 | US-01、UC-01 |
 | POST | /api/v1/profile/dialog | 对话画像抽取(多轮:session_id 可选,追问澄清,完成时返回画像更新 diff) | US-02 |
-| POST | /api/v1/profile/import | 持仓导入(文本/CSV) | US-03 |
+| POST | /api/v1/profile/import | 持仓导入并分析(mode=list 清单粘贴 / mode=text 文本描述;返回集中度、资产分布、换手特征、画像更新与偏差提示) | US-03 |
+| POST | /api/v1/profile/import/csv | 持仓 CSV 文件导入并分析 | US-03 |
 | GET | /api/v1/profile/report | 画像报告(含溯源与推断依据) | US-04 |
 | PUT | /api/v1/profile | 确认/修正画像 | US-04、BR-IMG-05 |
 | GET | /api/v1/profile | 当前画像 | US-04 |

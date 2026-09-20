@@ -13,6 +13,7 @@ from app.models.questionnaire_response import QuestionnaireResponse
 from app.models.user_profile import RISK_LEVEL_LABELS, RiskLevel, UserProfile
 from app.repositories.profile_repo import ProfileRepository
 from app.repositories.questionnaire_repo import QuestionnaireRepository
+from app.services.holdings_analysis import risk_deviation
 from app.services.risk_scoring import evaluate_answers, extract_profile_fields
 
 # 三来源仅问卷一种已收集时的画像置信度(UC-01 扩展 2a:允许先以低置信度画像继续)
@@ -21,6 +22,11 @@ QUESTIONNAIRE_ONLY_CONFIDENCE = Decimal("0.60")
 # 对话来源置信度(US-02):仅对话 0.55(定性表述弱于结构化问卷);问卷+对话 0.85
 DIALOG_ONLY_CONFIDENCE = Decimal("0.55")
 QUESTIONNAIRE_DIALOG_CONFIDENCE = Decimal("0.85")
+
+# 持仓来源置信度(US-03):仅持仓 0.50(客观数据但解读有限);两来源 0.85;三来源 0.95
+HOLDINGS_ONLY_CONFIDENCE = Decimal("0.50")
+TWO_SOURCE_CONFIDENCE = Decimal("0.85")
+THREE_SOURCE_CONFIDENCE = Decimal("0.95")
 
 # BR-IMG-03:画像建模三来源(不互相覆盖丢失,来源权重见 source_mix)
 ALL_PROFILE_SOURCES = ["问卷", "对话", "持仓"]
@@ -142,6 +148,94 @@ class ProfileService:
             label for key, label in SOURCE_KEY_TO_LABEL.items() if key not in (profile.source_mix or {})
         ]
         return {"profile_updates": updates, "incomplete_sources": incomplete}
+
+    async def merge_holdings_fields(
+        self,
+        user_id: int,
+        holding_habit_summary: str,
+        inferred_risk_level: RiskLevel,
+        stock_share: Decimal,
+    ) -> dict:
+        """持仓分析结论纳入画像(US-03 AC-3)。
+
+        - 无画像时以持仓推导风险等级初始化画像(持仓可作为首个画像来源,UC-01 主流程);
+        - 持仓习惯元素级合并:无值或一致则采纳,冲突保留原值待用户确认(BR-IMG-05);
+        - 来源权重均分,置信度:单来源 0.50 / 两来源 0.85 / 三来源 0.95;
+        - 自评风险等级与持仓实际水平偏差 ≥2 档时返回 risk_deviation 提示(AC-3)。
+        """
+        profile = await self.profile_repo.get_by_user_id(user_id)
+        is_new = profile is None
+        updates: list[dict] = []
+        if is_new:
+            profile = UserProfile(user_id=user_id, version=1, risk_level=inferred_risk_level)
+            updates.append(
+                {
+                    "field": "risk_level",
+                    "before": None,
+                    "after": inferred_risk_level.value,
+                    "source": "持仓",
+                    "applied": True,
+                    "conflict": False,
+                }
+            )
+
+        old_summary = profile.holding_habit_summary
+        same = old_summary == holding_habit_summary
+        if old_summary is None or same:
+            profile.holding_habit_summary = holding_habit_summary
+        updates.append(
+            {
+                "field": "holding_habit_summary",
+                "before": old_summary,
+                "after": holding_habit_summary,
+                "source": "持仓",
+                "applied": old_summary is None or same,
+                "conflict": old_summary is not None and not same,
+            }
+        )
+
+        contributed = [u for u in updates if u["applied"] and u["after"] != u["before"]]
+        if contributed:
+            if not is_new:
+                profile.version += 1  # BR-IMG-06:画像更新以版本递增留痕
+            mix = dict(profile.source_mix or {})
+            mix["holdings"] = 0.0
+            present = list(mix)
+            weight = round(1.0 / len(present), 4)
+            profile.source_mix = {key: weight for key in present}
+            profile.confidence = _confidence_for_sources(len(present))
+            profile.confirmed = False  # BR-IMG-05:确认/修正属 US-04 流程
+            await self.profile_repo.save(profile)
+            await self.session.commit()
+            await self.cache.delete(profile_cache_key(user_id))
+
+        deviation = None
+        if not is_new and risk_deviation(profile.risk_level, inferred_risk_level):
+            deviation = {
+                "assessed_risk_level": profile.risk_level.value,
+                "assessed_risk_level_name": RISK_LEVEL_LABELS[profile.risk_level],
+                "portfolio_risk_level": inferred_risk_level.value,
+                "portfolio_risk_level_name": RISK_LEVEL_LABELS[inferred_risk_level],
+                "stock_share": _to_float(stock_share),
+                "message": (
+                    f"自评风险等级({RISK_LEVEL_LABELS[profile.risk_level]})与实际持仓风险水平"
+                    f"({RISK_LEVEL_LABELS[inferred_risk_level]},股票类资产占比 {float(stock_share) * 100:.1f}%)"
+                    "偏差明显,建议在画像报告中确认或修正风险等级"
+                ),
+            }
+        incomplete = [
+            label for key, label in SOURCE_KEY_TO_LABEL.items() if key not in (profile.source_mix or {})
+        ]
+        return {"profile_updates": updates, "incomplete_sources": incomplete, "risk_deviation": deviation}
+
+
+def _confidence_for_sources(count: int) -> Decimal:
+    """来源数量 → 画像置信度(US-03 补定规则,登记于 requirements.md)。"""
+    if count == 1:
+        return HOLDINGS_ONLY_CONFIDENCE
+    if count == 2:
+        return TWO_SOURCE_CONFIDENCE
+    return THREE_SOURCE_CONFIDENCE
 
 
 def validate_answers(questions: list[dict], answers: list[dict]) -> None:
