@@ -371,7 +371,7 @@ users ──1:1── user_profiles ──1:N── (版本历史:同表 version
 | POST | /api/v1/auth/login | 登录,返回 JWT | R-01 |
 | GET | /api/v1/profile/questionnaires/latest | 获取最新问卷 | US-01 |
 | POST | /api/v1/profile/questionnaire | 提交问卷作答,返回风险等级 | US-01、UC-01 |
-| POST | /api/v1/profile/dialog | 对话画像抽取(文本输入,返回抽取要素) | US-02 |
+| POST | /api/v1/profile/dialog | 对话画像抽取(多轮:session_id 可选,追问澄清,完成时返回画像更新 diff) | US-02 |
 | POST | /api/v1/profile/import | 持仓导入(文本/CSV) | US-03 |
 | GET | /api/v1/profile/report | 画像报告(含溯源与推断依据) | US-04 |
 | PUT | /api/v1/profile | 确认/修正画像 | US-04、BR-IMG-05 |

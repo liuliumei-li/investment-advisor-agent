@@ -3,7 +3,7 @@
 > 通用规范(统一响应信封、错误码表、鉴权约定)见 [architecture.md](architecture.md) §5.1;本文档登记**已实现**接口。
 > 完整接口规划见 architecture.md §5.2(未实现的接口不在此登记)。
 
-## 已实现接口(US-01,2026-09-19)
+## 已实现接口(US-01、US-02,2026-09-20)
 
 | 方法 | 路径 | 说明 | 鉴权 | 关联 |
 |---|---|---|---|---|
@@ -12,6 +12,7 @@
 | GET | /api/v1/profile/questionnaires/latest | 获取最新问卷 | 是 | US-01 AC-1 |
 | POST | /api/v1/profile/questionnaire | 提交问卷作答,返回风险等级与画像要素 | 是 | US-01 AC-2、UC-01 |
 | GET | /api/v1/profile/questionnaire/latest-response | 查看本人最近一次测评结果 | 是 | US-01 AC-3 |
+| POST | /api/v1/profile/dialog | 对话画像:多轮抽取/追问,完成时返回画像更新 diff | 是 | US-02、UC-01 |
 
 所有接口响应均为统一信封:`{ "code": 0, "message": "ok", "data": ..., "trace_id": "..." }`;`code=0` 表示成功,`trace_id` 同时写入响应头 `X-Trace-Id`。
 
@@ -258,6 +259,90 @@
 |---|---|---|
 | 40101 | 401 | 未认证 |
 | 40102 | 401 | Token 过期 |
+
+---
+
+## 6. POST /api/v1/profile/dialog
+
+自然语言对话建立画像(US-02、UC-01)。每轮返回已抽取要素与追问;风险承受/收益预期/投资期限三要素齐备或用户 `finish=true` 时收口,执行画像合并并返回本次更新 diff(AC-4)。
+
+**请求头**:`Authorization: Bearer <access_token>`
+
+**请求体**
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| session_id | string | 否 | 多轮会话 id;首次不传(服务端生成并返回),后续轮次带回 |
+| message | string | 否* | 本轮用户消息(*finish=false 时必填,≤2000 字) |
+| finish | bool | 否 | true 时不再抽取,按已有信息收口合并 |
+
+**成功响应(200,追问轮)**
+
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "session_id": "a1b2c3d4e5f6a7b8",
+    "reply": "好的,还想再了解几点:\n1. 您期望的年化收益率大概是多少?(例如:5%~10%)\n2. 这笔钱您计划投资多长时间?(例如:1 年以内、1~3 年、3 年以上)",
+    "needs_clarification": true,
+    "completed": false,
+    "slots": {
+      "risk_tolerance": { "level": "C3", "evidence": "我能承受 20% 回撤" }
+    },
+    "profile_updates": null
+  },
+  "trace_id": "7f3a2c1d9e0b4a6f"
+}
+```
+
+**成功响应(200,收口轮)**
+
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "session_id": "a1b2c3d4e5f6a7b8",
+    "reply": "画像已更新,本次更新要素如下,可在画像报告中确认或修正。",
+    "needs_clarification": false,
+    "completed": true,
+    "slots": {
+      "risk_tolerance": { "level": "C3", "evidence": "我能承受 20% 回撤" },
+      "return_expectation": { "low": 10, "high": 15, "evidence": "希望年化 10% 到 15%" },
+      "investment_horizon": { "value": "长期", "evidence": "打算放三年" }
+    },
+    "profile_updates": [
+      {
+        "field": "risk_level",
+        "before": null,
+        "after": "C3",
+        "source": "对话",
+        "quote": "我能承受 20% 回撤",
+        "applied": true,
+        "conflict": false
+      }
+    ]
+  },
+  "trace_id": "7f3a2c1d9e0b4a6f"
+}
+```
+
+**行为说明**
+
+- 追问由服务端模板生成,每轮最多 2 个;追问轮数上限 5,超限按已有信息收口(UC-01 扩展 2a);
+- 画像合并规则(BR-IMG-03/05):对话要素与已有画像一致则采纳;冲突时保留原值,并在 `profile_updates` 中以 `conflict: true` 披露,待用户在画像报告确认/修正(US-04);
+- 每个抽取值经原文引用校验(`evidence` 必须为用户原话片段),校验失败即丢弃并追问;
+- 画像来源权重与置信度:仅对话来源时 0.55;问卷+对话各 0.5、置信度 0.85。
+
+**错误**
+
+| code | HTTP | 场景 |
+|---|---|---|
+| 40001 | 400 | finish=false 且 message 为空;风险承受信息不足且无既有画像(收口时) |
+| 40101 | 401 | 未认证 |
+| 40102 | 401 | Token 过期 |
+| 50004 | 500 | LLM 服务不可用(超时/鉴权失败/返回异常,重试耗尽) |
 
 ---
 

@@ -115,9 +115,11 @@ class TestErrorMapping:
         with pytest.raises(LLMServiceError, match="JSON"):
             await client.chat_json(MESSAGES)
 
-    async def test_missing_api_key_raises_at_init(self):
-        with pytest.raises(LLMServiceError):
-            DeepSeekClient(base_url="https://mock", api_key="", transport=httpx.MockTransport(lambda r: _ok_response()))
+    async def test_missing_api_key_raises_on_call(self):
+        transport = httpx.MockTransport(lambda r: _ok_response())
+        client = DeepSeekClient(base_url="https://mock", api_key="", transport=transport)
+        with pytest.raises(LLMServiceError, match="未配置"):
+            await client.chat_json(MESSAGES)
 
 
 class TestUsageLogging:

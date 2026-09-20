@@ -38,8 +38,6 @@ class DeepSeekClient(LLMClient):
         self.timeout = timeout if timeout is not None else settings.llm_timeout_seconds
         self.max_retries = max_retries if max_retries is not None else settings.llm_max_retries
         self.transport = transport  # 单测注入 httpx.MockTransport(architecture.md §6.1)
-        if not self.api_key:
-            raise LLMServiceError("LLM API Key 未配置(环境变量 LLM_API_KEY)")
 
     async def chat_json(
         self,
@@ -48,6 +46,9 @@ class DeepSeekClient(LLMClient):
         temperature: float = 0.2,
         purpose: str = "general",
     ) -> dict:
+        if not self.api_key:
+            # 惰性失败:未配置 Key 时服务可启动,真正需要调用 LLM 时才报错
+            raise LLMServiceError("LLM API Key 未配置(环境变量 LLM_API_KEY)")
         payload = {
             "model": self.model,
             "messages": messages,
