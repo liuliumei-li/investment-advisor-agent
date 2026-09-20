@@ -61,5 +61,6 @@ def get_cache() -> Cache:
     """FastAPI 依赖:进程级单例(测试经 dependency_overrides 替换)。"""
     global _cache
     if _cache is None:
-        _cache = Cache(Redis.from_url(settings.redis_url, decode_responses=True))
+        # protocol=2:RESP2 全版本兼容(Windows 便携版 Redis 5.0 不支持 redis-py 6 默认的 RESP3)
+        _cache = Cache(Redis.from_url(settings.redis_url, decode_responses=True, protocol=2))
     return _cache
