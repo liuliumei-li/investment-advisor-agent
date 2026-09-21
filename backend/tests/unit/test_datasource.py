@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from app.core.exceptions import DataSourceUnavailable
-from app.datasource.eastmoney import EastmoneyResearchSource, _parse_jsonp
+from app.datasource.eastmoney import EastmoneyBoardSource, EastmoneyResearchSource, _parse_jsonp
 from app.datasource.sina import SinaNewsSource, SinaQuoteSource, _feed_time
 from app.datasource.skillhub import SkillHubSource
 
@@ -55,6 +55,31 @@ class TestSinaQuoteSource:
         transport = httpx.MockTransport(lambda request: httpx.Response(500))
         source = SinaQuoteSource(transport=transport)
         with pytest.raises(DataSourceUnavailable, match="新浪财经行情"):
+            await source.fetch()
+
+
+class TestEastmoneyBoardSource:
+    async def test_fetch_parses_industry_boards(self):
+        body = {
+            "data": {
+                "diff": [
+                    {"f14": "半导体", "f3": 7.97, "f62": 48168824.0},
+                    {"f14": "医疗器械服务", "f3": 7.35, "f62": 265949626.0},
+                ]
+            }
+        }
+        source = EastmoneyBoardSource(transport=_transport(body))
+        points = await source.fetch()
+        assert len(points) == 2
+        point = points[0]
+        assert point.source_name == "东方财富板块"
+        assert "半导体" in point.data_point and "7.97%" in point.data_point
+        assert "主力净流入 48168824.0" in point.data_point
+        assert point.data_timestamp
+
+    async def test_empty_diff_raises(self):
+        source = EastmoneyBoardSource(transport=_transport({"data": {"diff": []}}))
+        with pytest.raises(DataSourceUnavailable, match="东方财富板块"):
             await source.fetch()
 
 

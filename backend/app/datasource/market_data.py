@@ -19,15 +19,24 @@ logger = logging.getLogger(__name__)
 class MarketDataService:
     """数据源编排:并发拉取 + 降级标注 + 行情缓存(不碰具体协议,协议在各适配器)。"""
 
-    def __init__(self, cache: Cache, quote_source: DataSource, news_source: DataSource, research_source: DataSource):
+    def __init__(
+        self,
+        cache: Cache,
+        quote_source: DataSource,
+        news_source: DataSource,
+        research_source: DataSource,
+        board_source: DataSource | None = None,
+    ):
         self.cache = cache
         self.quote_source = quote_source
         self.news_source = news_source
         self.research_source = research_source
+        self.board_source = board_source
 
-    async def fetch_market_snapshot(self) -> dict:
-        """并发拉取行情/快讯/研报,返回 {quotes, news, research, degraded, fetched_at}。"""
+    async def fetch_market_snapshot(self, *, with_boards: bool = False) -> dict:
+        """并发拉取行情/快讯/研报(可选板块),返回 {quotes, news, research, boards, degraded, fetched_at}。"""
         cached_quotes = await self._cached_quotes()
+        board_task = _safe_fetch(self.board_source) if with_boards and self.board_source else None
         results = await asyncio.gather(
             _safe_fetch(self.news_source),
             _safe_fetch(self.research_source),
@@ -41,12 +50,16 @@ class MarketDataService:
             degraded.append({"source": self.news_source.name, "reason": str(news_err)})
         if research_err:
             degraded.append({"source": self.research_source.name, "reason": str(research_err)})
-        if not quotes and not news and not research:
+        boards, board_err = await board_task if board_task else ([], None)
+        if board_err:
+            degraded.append({"source": self.board_source.name, "reason": str(board_err)})
+        if not quotes and not news and not research and not boards:
             raise DataSourceUnavailable("行情/资讯/研报数据源全部不可用,请稍后重试")
         return {
             "quotes": quotes,
             "news": news,
             "research": research,
+            "boards": boards,
             "degraded": degraded,
             "fetched_at": datetime.now(timezone.utc).isoformat(),
         }
