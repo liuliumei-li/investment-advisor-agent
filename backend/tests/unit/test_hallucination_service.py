@@ -3,7 +3,7 @@
 from app.services.hallucination_service import annotate_dubious, extract_numbers, validate_market_advice
 
 PROVIDED = [
-    {"ref": "来源1", "source_name": "东方财富行情", "data_point": "上证指数(000001) 3949.91,涨跌 0.97%,今开 3914.50"},
+    {"ref": "来源1", "source_name": "新浪财经行情", "data_point": "上证指数(000001) 3949.91,涨跌 0.97%,今开 3914.50"},
     {"ref": "来源2", "source_name": "新浪财经快讯", "data_point": "央行开展逆回购操作"},
 ]
 

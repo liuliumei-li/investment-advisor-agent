@@ -19,10 +19,10 @@ from tests.helpers import FakeLLM, full_answers
 QUESTIONS = QUESTIONNAIRE_V1["questions"]
 
 QUOTE_POINT = DataPoint(
-    source_name="东方财富行情",
+    source_name="新浪财经行情",
     source_type="quote",
-    data_point="上证指数(000001) 3949.91,涨跌 0.97%,今开 3914.50",
-    source_url="https://quote.eastmoney.com/zs000001.html",
+    data_point="上证指数(000001) 3949.91,涨跌 0.97%",
+    source_url="https://finance.sina.com.cn/realstock/company/sh000001/nc.shtml",
     data_timestamp="2026-09-21T10:00:00+00:00",
 )
 NEWS_POINT = DataPoint(
@@ -59,7 +59,7 @@ class FakeSource(DataSource):
 def make_market_data(cache):
     return MarketDataService(
         cache,
-        quote_source=FakeSource("东方财富行情", [QUOTE_POINT]),
+        quote_source=FakeSource("新浪财经行情", [QUOTE_POINT]),
         news_source=FakeSource("新浪财经快讯", [NEWS_POINT]),
         research_source=FakeSource("东方财富研报", []),
     )
@@ -177,6 +177,18 @@ class TestAnalyze:
         assert advice.position_suggestion["risk_level"] == "C1"
         assert advice.position_suggestion["stock_cap"] == "≤20%"
 
+    async def test_risk_tips_list_tolerated(self, db_session, cache, seeded_questionnaire):
+        """真实 LLM 可能把 risk_tips 输出为数组 → Schema 容错归一为换行拼接。"""
+        session_id, _ = await setup_profile_and_session(db_session, cache, seeded_questionnaire)
+        draft = {**DRAFT, "risk_tips": ["注意回调风险。", "外部不确定性较大。"]}
+        advisor = make_advisor(db_session, cache, FakeLLM([draft]))
+
+        result = await advisor.analyze(1, session_id, "大盘?")
+
+        assert "注意回调风险。" in result["risk_tips"]
+        assert "外部不确定性较大。" in result["risk_tips"]
+        assert result["compliance_status"] == "passed"
+
     async def test_prompt_contains_profile_and_numbered_sources(self, db_session, cache, seeded_questionnaire):
         session_id, _ = await setup_profile_and_session(db_session, cache, seeded_questionnaire)
         llm = FakeLLM([DRAFT])
@@ -185,7 +197,7 @@ class TestAnalyze:
         await advisor.analyze(1, session_id, "今天大盘怎么样?")
 
         user_message = llm.calls[0][1]["content"]
-        assert "来源1 [东方财富行情]" in user_message
+        assert "来源1 [新浪财经行情]" in user_message
         assert "来源2 [新浪财经快讯]" in user_message
         assert "风险等级 进取型(C4)" in user_message
         assert "60%~80%" in user_message  # BR-IMG-04 矩阵注入

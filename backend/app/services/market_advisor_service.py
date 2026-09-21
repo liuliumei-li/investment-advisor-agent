@@ -11,7 +11,7 @@ import logging
 import time
 from datetime import datetime, timezone
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import ValidationFailed
@@ -56,7 +56,7 @@ class KeyFactor(BaseModel):
 
 
 class LogicStep(BaseModel):
-    step: str
+    step: str = ""  # LLM 可能省略步骤编号(容错,content 为准)
     content: str
     source_refs: list[str] = Field(default_factory=list)
 
@@ -72,15 +72,25 @@ class ReturnExpectation(BaseModel):
 
 
 class MarketAdviceDraft(BaseModel):
-    """LLM 研判草稿(经两道 gate 校验后才允许落库输出)。"""
+    """LLM 研判草稿(经两道 gate 校验后才允许落库输出)。
+
+    容错约定:真实 LLM 可能把 risk_tips 输出为数组(逐条提示),此处归一为换行拼接。
+    """
 
     market_review: str
     key_factors: list[KeyFactor]
     logic_chain: list[LogicStep]
     conclusion: str
-    risk_tips: str
+    risk_tips: str | list[str]
     position_suggestion: PositionSuggestion
     return_expectation: ReturnExpectation | None = None
+
+    @field_validator("risk_tips", mode="before")
+    @classmethod
+    def _join_risk_tips(cls, value) -> str:
+        if isinstance(value, list):
+            return "\n".join(str(item) for item in value if str(item).strip())
+        return value
 
 
 class MarketAdvisorService:

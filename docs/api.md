@@ -3,7 +3,7 @@
 > 通用规范(统一响应信封、错误码表、鉴权约定)见 [architecture.md](architecture.md) §5.1;本文档登记**已实现**接口。
 > 完整接口规划见 architecture.md §5.2(未实现的接口不在此登记)。
 
-## 已实现接口(US-01 ~ US-05,2026-09-21)
+## 已实现接口(US-01 ~ US-06,2026-09-21)
 
 | 方法 | 路径 | 说明 | 鉴权 | 关联 |
 |---|---|---|---|---|
@@ -19,6 +19,10 @@
 | GET | /api/v1/profile | 当前画像(紧凑视图) | 是 | US-04 AC-4 |
 | PUT | /api/v1/profile | 确认画像 / 修正个别要素 | 是 | US-04 AC-3、BR-IMG-05 |
 | GET | /api/v1/profile/history | 画像更新历史(分页,最新在前) | 是 | US-05 AC-3、BR-IMG-06 |
+| POST | /api/v1/chat/sessions | 创建咨询会话(US-06 仅开放大盘研判) | 是 | US-06、UC-02 |
+| POST | /api/v1/chat/sessions/{id}/messages | 发送咨询消息(SSE 流式:meta→delta→result→done) | 是 | US-06、UC-02 |
+| GET | /api/v1/chat/sessions/{id}/messages | 历史消息 | 是 | US-06、UC-02 |
+| GET | /api/v1/advice/{advice_id} | 建议详情(四要素+逻辑链+溯源引用) | 是 | US-06、BR-ADV-01 |
 
 所有接口响应均为统一信封:`{ "code": 0, "message": "ok", "data": ..., "trace_id": "..." }`;`code=0` 表示成功,`trace_id` 同时写入响应头 `X-Trace-Id`。
 
@@ -661,6 +665,93 @@
 | 40001 | 400 | page < 1;page_size 超出 1~100 |
 | 40101 | 401 | 未认证 |
 | 40102 | 401 | Token 过期 |
+
+---
+
+## 12. 咨询会话接口(US-06 大盘研判)
+
+大盘研判为 UC-02 主流程:创建会话 → SSE 流式咨询 → 查看历史/建议详情。US-06 仅开放 `market` 场景(其余场景待 US-07~11 开放,当前返回 40001 提示)。研判链路:实时行情/快讯/研报取数(免费公开三源 + SkillHub 占位)→ LLM 生成 → 幻觉校验 gate → 合规审核 gate → 四要素落库,全程经数据源白名单与引用溯源(BR-DAT-02/04/05、BR-CMP-01/02)。
+
+### 12.1 POST /api/v1/chat/sessions
+
+**请求头**:`Authorization: Bearer <access_token>`
+
+**请求体**
+
+```json
+{ "scenario": "market" }
+```
+
+**成功响应(200)**:`data` 为 `{ "session_id": 1, "scenario": "market" }`。
+
+**错误**:40001(scenario 未开放)/ 40101 / 40102
+
+### 12.2 POST /api/v1/chat/sessions/{session_id}/messages(SSE 流式)
+
+**请求头**:`Authorization: Bearer <access_token>`;响应为 `text/event-stream`。
+
+**请求体**
+
+```json
+{ "content": "今天大盘怎么样?" }
+```
+
+**SSE 事件序列**(architecture.md §5.3):
+
+```text
+event: meta    data: {"session_id": 1, "scenario": "market", "agents": ["宏观研究"]}
+event: delta   data: {"step": "取数", "detail": "行情 4 条,快讯 10 条,研报 5 条,降级源 0 个"}
+event: delta   data: {"step": "生成", "detail": "影响因素 3 条,逻辑链 4 步"}
+event: delta   data: {"step": "校验", "detail": "幻觉检测 0 条问题"}
+event: delta   data: {"step": "合规", "detail": "命中 1 条规则,动作 pass"}
+event: result  data: {"advice_id": 12, "conclusion": "...", "risk_tips": "...", "compliance_status": "passed", "degraded": [], "citations_count": 20}
+event: done    data: {"duration_ms": 2410}
+```
+
+- `delta` 事件条数不固定(取数/生成/校验/合规四步);`degraded` 为降级数据源清单(源故障时非空);
+- 中途业务异常输出 `event: error data: {"code": 40001, "message": "..."}` 后接 `done`;
+- 会话归属(40401)与场景开放度(40001)在流开始前以 HTTP 状态码返回。
+
+**前置条件**:用户画像已建立(问卷/对话/持仓任一渠道);未建立时流内输出 40001 error 事件提示。
+
+**错误**:40001(消息为空、场景未开放、画像未建立、研判校验不过)/ 40101 / 40102 / 40401(会话不存在)/ 50003(数据源全部不可用)/ 50004(LLM 不可用)。
+
+### 12.3 GET /api/v1/chat/sessions/{session_id}/messages
+
+历史消息(时间正序),`data` 为 `{ "items": [{ "id", "role", "content", "advice_id", "created_at" }], "total" }`;助手消息的 `advice_id` 可跳转建议详情。
+
+### 12.4 GET /api/v1/advice/{advice_id}
+
+建议详情(BR-ADV-01 四要素 + 逻辑链 + 溯源引用,AC-1/AC-3 数据基础):
+
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "advice_id": 12,
+    "scenario": "market",
+    "conclusion": "上证指数报 3949.91 点,涨 0.97%,……",
+    "logic_chain": [
+      { "step": "1", "content": "指数上涨 0.97%。", "source_refs": ["来源1"] }
+    ],
+    "risk_tips": "注意回调风险。\n本内容仅供参考,不构成投资建议;市场有风险,投资需谨慎。",
+    "position_suggestion": { "action": "持有", "reason": "……", "risk_level": "C4", "risk_level_name": "进取型", "stock_cap": "60%~80%" },
+    "return_expectation": { "low": 5.0, "high": 10.0 },
+    "compliance_status": "passed",
+    "citations": [
+      { "source_name": "东方财富行情", "source_type": "quote", "data_point": "上证指数(000001) 3949.91,涨跌 0.97%", "source_url": "…", "data_timestamp": "…", "verified": true },
+      { "source_name": "用户画像", "source_type": "profile", "data_point": "风险等级 进取型(C4),股票类仓位上限 60%~80%", "source_url": "", "data_timestamp": "…", "verified": true }
+    ],
+    "created_at": "2026-09-21T14:00:00+00:00"
+  },
+  "trace_id": "…"
+}
+```
+
+字段说明:`logic_chain` 为结论→依据→数据的逻辑链结构,支持逐级展开(US-21 专用端点后续迭代);`position_suggestion.stock_cap` 为按 BR-IMG-04 矩阵生成的确定性仓位上限;`citations` 每条为可点击溯源的数据引用(BR-DAT-04),`verified` 为幻觉校验结果。
+
+**错误**:40101 / 40102 / 40401(建议不存在或非本人)
 
 ---
 

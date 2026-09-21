@@ -6,8 +6,8 @@ import httpx
 import pytest
 
 from app.core.exceptions import DataSourceUnavailable
-from app.datasource.eastmoney import EastmoneyQuoteSource, EastmoneyResearchSource, _parse_jsonp
-from app.datasource.sina import SinaNewsSource, _feed_time
+from app.datasource.eastmoney import EastmoneyResearchSource, _parse_jsonp
+from app.datasource.sina import SinaNewsSource, SinaQuoteSource, _feed_time
 from app.datasource.skillhub import SkillHubSource
 
 
@@ -19,34 +19,42 @@ def _transport_text(text) -> httpx.MockTransport:
     return httpx.MockTransport(lambda request: httpx.Response(200, text=text))
 
 
-class TestEastmoneyQuoteSource:
-    async def test_fetch_parses_index_quotes(self):
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(
-                200,
-                json={
-                    "data": {
-                        "f43": 394991, "f57": "000001", "f58": "上证指数", "f59": 2,
-                        "f60": 391122, "f169": 97, "f170": 97, "f46": 391450,
-                    }
-                },
-            )
+def _transport_bytes(data: bytes) -> httpx.MockTransport:
+    return httpx.MockTransport(lambda request: httpx.Response(200, content=data))
 
-        source = EastmoneyQuoteSource(transport=httpx.MockTransport(handler))
+
+SINA_QUOTE_GB18030 = (
+    'var hq_str_s_sh000001="上证指数,3949.9068,38.0354,0.97,5023548,94681912";\n'
+    'var hq_str_s_sz399001="深证成指,13730.02,89.30,0.65,3000000,50000000";\n'
+    'var hq_str_s_sz399006="创业板指,3399.59,27.10,0.80,2000000,40000000";\n'
+    'var hq_str_s_sh000300="沪深300,4539.57,32.20,0.71,2500000,45000000";\n'
+).encode("gb18030")
+
+
+class TestSinaQuoteSource:
+    async def test_fetch_parses_index_quotes(self):
+        source = SinaQuoteSource(transport=_transport_bytes(SINA_QUOTE_GB18030))
         points = await source.fetch()
         assert len(points) == 4  # 上证/深成/创业板/沪深300
         point = points[0]
-        assert point.source_name == "东方财富行情"
+        assert point.source_name == "新浪财经行情"
         assert point.source_type == "quote"
         assert "上证指数(000001)" in point.data_point
-        assert "3949.91" in point.data_point  # f43 / 10^2
-        assert point.source_url == "https://quote.eastmoney.com/zs000001.html"
+        assert "3949.9068" in point.data_point
+        assert "0.97%" in point.data_point
+        assert point.source_url.endswith("/sh000001/nc.shtml")
         assert point.data_timestamp  # 抓取时间 ISO
 
-    async def test_all_quotes_failed_raises_unavailable(self):
+    async def test_empty_response_raises_unavailable(self):
+        transport = _transport_bytes(b"")
+        source = SinaQuoteSource(transport=transport)
+        with pytest.raises(DataSourceUnavailable, match="新浪财经行情"):
+            await source.fetch()
+
+    async def test_http_error_raises_unavailable(self):
         transport = httpx.MockTransport(lambda request: httpx.Response(500))
-        source = EastmoneyQuoteSource(transport=transport)
-        with pytest.raises(DataSourceUnavailable, match="东方财富行情"):
+        source = SinaQuoteSource(transport=transport)
+        with pytest.raises(DataSourceUnavailable, match="新浪财经行情"):
             await source.fetch()
 
 

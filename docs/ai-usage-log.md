@@ -17,5 +17,7 @@
 > 注:US-03 开发与测试全程使用 FakeLLM 替身,无真实大模型调用。
 
 | 2026-09-21 | DeepSeek deepseek-chat(真实调用,1 次) | E1 全链路演示冒烟:对话画像三要素一次抽取(20% 回撤→C2、收益预期、期限),验证冲突保留与报告披露链路 | 运行验证(HTTP + 真实 Redis),无代码变更;调用经 app/llm 适配层,用量由 app.llm 日志记录 |
+| 2026-09-21 | DeepSeek deepseek-chat(真实调用,1 次) | US-06 大盘研判冒烟:真实三源数据(新浪行情/新浪快讯/东财研报)注入提示词,LLM 生成走势解读/影响因素/逻辑链/风险提示/仓位建议,经幻觉校验与合规 gate 落库 | 运行验证(HTTP + 真实 Redis),无代码变更;调用经 app/llm 适配层,用量由 app.llm 日志记录 |
+| 2026-09-21 | Claude Code | US-06 大盘研判:数据源适配层(免费公开三源+SkillHub 占位、白名单与溯源、行情 5 秒缓存与降级)、研判服务与两道 gate(幻觉校验+合规审核)、咨询会话 SSE 接口与四要素落库、新增测试 44 例;requirements.md v1.5 补定量化规则 | backend/app/datasource/、backend/app/services/(hallucination/compliance/market_advisor/chat_service)、backend/app/models/(chat/advice)、backend/app/repositories/(chat/advice_repo)、backend/app/api/routers/(chat/advice)、backend/app/schemas/chat.py、backend/alembic/、backend/tests/、docs/requirements.md、docs/api.md、docs/architecture.md、本文档 |
 
 说明:自 2026-09-20 起(US-02 冒烟测试)开发阶段已开始真实调用第三方大模型(DeepSeek),上表按次补充(模型、用途、时间、影响范围);开发辅助类 AI(Claude Code)调用与真实 LLM 调用分行记录。

@@ -1,28 +1,20 @@
-"""东方财富公开数据适配器(免费无需凭据):指数行情与券商研报。
+"""东方财富公开数据适配器(免费无需凭据):券商研报。
 
 接口说明(2026-09-21 验证可用,直连 trust_env=False 避免本机注册表代理干扰):
-- 行情:https://push2.eastmoney.com/api/qt/stock/get(secid 区分市场:1=沪、0=深/创业板)
-- 研报:https://reportapi.eastmoney.com/report/list(JSONP 包装 datatable(...),须剥壳)
+- 研报:https://reportapi.eastmoney.com/report/list(JSONP 包装 datatable(...),须剥壳);
+- 行情已改用新浪 hq.sinajs.cn(见 sina.py):push2 行情接口对频繁调用限流断连。
 """
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 
 import httpx
 
 from app.core.config import settings
-from app.datasource.base import SOURCE_TYPE_QUOTE, SOURCE_TYPE_RESEARCH, DataPoint, DataSource
+from app.datasource.base import SOURCE_TYPE_RESEARCH, DataPoint, DataSource
 
 logger = logging.getLogger(__name__)
-
-# 大盘研判覆盖的宽基指数(BR-DAT-01 行情源):名称、市场代码、secid
-MARKET_INDEXES = [
-    ("上证指数", "000001", "1.000001"),
-    ("深证成指", "399001", "0.399001"),
-    ("创业板指", "399006", "0.399006"),
-    ("沪深300", "000300", "1.000300"),
-]
 
 # 研报列表每页条数(研判上下文取最新一页)
 RESEARCH_PAGE_SIZE = 5
@@ -35,51 +27,6 @@ def _client(transport: httpx.AsyncBaseTransport | None = None) -> httpx.AsyncCli
         headers={"User-Agent": "Mozilla/5.0", "Referer": "https://data.eastmoney.com/"},
         transport=transport,
     )
-
-
-class EastmoneyQuoteSource(DataSource):
-    """指数实时行情(secid 秒级快照,缓存策略在 market_data 编排层)。"""
-
-    name = "东方财富行情"
-
-    def __init__(self, transport: httpx.AsyncBaseTransport | None = None):
-        self.transport = transport  # 单测注入 httpx.MockTransport
-
-    async def fetch(self) -> list[DataPoint]:
-        points: list[DataPoint] = []
-        fetched_at = datetime.now(timezone.utc).isoformat()
-        async with _client(transport=self.transport) as client:
-            for label, code, secid in MARKET_INDEXES:
-                try:
-                    response = await client.get(
-                        "https://push2.eastmoney.com/api/qt/stock/get",
-                        params={"secid": secid, "fields": "f43,f57,f58,f60,f169,f170,f46"},
-                    )
-                    data = response.json().get("data") or {}
-                    price = data.get("f43")
-                    if price is None or data.get("f58") is None:
-                        raise ValueError(f"接口返回缺少行情字段:{response.text[:80]}")
-                    # f43 为千分位整数(如 394991 = 3949.91),按 f57 小数位解码
-                    decimals = data.get("f59", 2) or 2
-                    points.append(
-                        DataPoint(
-                            source_name=self.name,
-                            source_type=SOURCE_TYPE_QUOTE,
-                            data_point=(
-                                f"{label}({code}):{data['f58']} {float(price) / 10**decimals:.{decimals}f},"
-                                f"涨跌 {float(data.get('f169') or 0) / 100:.2f}%,"
-                                f"今开 {float(data.get('f46') or 0) / 10**decimals:.{decimals}f},"
-                                f"昨收 {float(data.get('f60') or 0) / 10**decimals:.{decimals}f}"
-                            ),
-                            source_url=f"https://quote.eastmoney.com/zs{code}.html",
-                            data_timestamp=fetched_at,
-                        )
-                    )
-                except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
-                    logger.warning("行情拉取失败 %s:%s", label, exc)
-        if not points:
-            raise self.unavailable("指数行情全部拉取失败")
-        return points
 
 
 class EastmoneyResearchSource(DataSource):

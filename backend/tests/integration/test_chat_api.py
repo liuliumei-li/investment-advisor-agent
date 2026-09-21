@@ -11,8 +11,8 @@ from tests.helpers import FakeLLM, full_answers, register_and_login
 QUESTIONS = QUESTIONNAIRE_V1["questions"]
 
 QUOTE_POINT = DataPoint(
-    source_name="东方财富行情", source_type="quote",
-    data_point="上证指数(000001) 3949.91,涨跌 0.97%", source_url="https://quote.eastmoney.com/",
+    source_name="新浪财经行情", source_type="quote",
+    data_point="上证指数(000001) 3949.91,涨跌 0.97%", source_url="https://finance.sina.com.cn/",
     data_timestamp="2026-09-21T10:00:00+00:00",
 )
 NEWS_POINT = DataPoint(
@@ -46,7 +46,7 @@ def install_fakes(cache) -> None:
     app.dependency_overrides[get_llm_client] = lambda: FakeLLM([DRAFT])
     app.dependency_overrides[get_market_data_service] = lambda: MarketDataService(
         cache,
-        quote_source=FakeSource("东方财富行情", [QUOTE_POINT]),
+        quote_source=FakeSource("新浪财经行情", [QUOTE_POINT]),
         news_source=FakeSource("新浪财经快讯", [NEWS_POINT]),
         research_source=FakeSource("东方财富研报", []),
     )
