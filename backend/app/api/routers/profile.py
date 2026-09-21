@@ -1,9 +1,9 @@
-"""画像接口:问卷获取/提交/作答查询、对话画像、持仓导入与分析、画像报告与确认修正。
+"""画像接口:问卷获取/提交/作答查询、对话画像、持仓导入与分析、画像报告/确认修正/更新历史。
 
 Controller 仅取参 → 调 Service → 返回。
 """
 
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, Depends, File, Query, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.cache.redis_client import Cache, get_cache
@@ -143,4 +143,15 @@ async def update_profile(
     result = await service.confirm_or_amend(
         user_id, payload.confirm, [amendment.model_dump() for amendment in payload.amendments]
     )
+    return ApiResponse(data=result)
+
+
+@router.get("/history")
+async def get_profile_history(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    user_id: int = Depends(get_current_user_id),
+    service: ProfileReportService = Depends(get_profile_report_service),
+):
+    result = await service.get_history(user_id, page, page_size)
     return ApiResponse(data=result)

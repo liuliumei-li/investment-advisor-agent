@@ -3,7 +3,7 @@
 > 通用规范(统一响应信封、错误码表、鉴权约定)见 [architecture.md](architecture.md) §5.1;本文档登记**已实现**接口。
 > 完整接口规划见 architecture.md §5.2(未实现的接口不在此登记)。
 
-## 已实现接口(US-01 ~ US-04,2026-09-21)
+## 已实现接口(US-01 ~ US-05,2026-09-21)
 
 | 方法 | 路径 | 说明 | 鉴权 | 关联 |
 |---|---|---|---|---|
@@ -18,6 +18,7 @@
 | GET | /api/v1/profile/report | 画像报告:四要素维度、雷达分数、逐要素溯源与待确认冲突 | 是 | US-04、UC-01 |
 | GET | /api/v1/profile | 当前画像(紧凑视图) | 是 | US-04 AC-4 |
 | PUT | /api/v1/profile | 确认画像 / 修正个别要素 | 是 | US-04 AC-3、BR-IMG-05 |
+| GET | /api/v1/profile/history | 画像更新历史(分页,最新在前) | 是 | US-05 AC-3、BR-IMG-06 |
 
 所有接口响应均为统一信封:`{ "code": 0, "message": "ok", "data": ..., "trace_id": "..." }`;`code=0` 表示成功,`trace_id` 同时写入响应头 `X-Trace-Id`。
 
@@ -588,6 +589,78 @@
 | 40101 | 401 | 未认证 |
 | 40102 | 401 | Token 过期 |
 | 40401 | 404 | 画像不存在 |
+
+---
+
+## 11. GET /api/v1/profile/history
+
+画像更新历史分页查询(US-05 AC-3、BR-IMG-06):每次画像版本递增留存一条事件,记录何时、因何、由哪一要素变化引起;最新在前。
+
+**请求头**:`Authorization: Bearer <access_token>`
+
+**查询参数**
+
+| 参数 | 类型 | 默认 | 约束 |
+|---|---|---|---|
+| page | int | 1 | ≥1 |
+| page_size | int | 20 | 1~100 |
+
+**成功响应(200)**
+
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "items": [
+      {
+        "id": 4,
+        "version": 4,
+        "trigger": "用户修正",
+        "changes": [
+          { "field": "risk_level", "before": "C4", "after": "C2", "source": "用户修正", "quote": null }
+        ],
+        "conflicts": [],
+        "created_at": "2026-09-21T12:00:00+00:00"
+      },
+      {
+        "id": 3,
+        "version": 3,
+        "trigger": "对话更新",
+        "changes": [
+          { "field": "holding_habit_summary", "before": null, "after": "重仓白酒", "source": "对话", "quote": "我主要拿的是白酒股" }
+        ],
+        "conflicts": [
+          { "field": "risk_level", "current": "C4", "proposed": "C1", "source": "对话", "quote": "我完全不想亏钱" }
+        ],
+        "created_at": "2026-09-21T11:30:00+00:00"
+      }
+    ],
+    "total": 4,
+    "page": 1,
+    "page_size": 20
+  },
+  "trace_id": "7f3a2c1d9e0b4a6f"
+}
+```
+
+字段说明:
+
+| 字段 | 说明 |
+|---|---|
+| trigger | 触发来源:问卷测评 / 对话更新 / 持仓更新 / 用户修正 / 用户确认 |
+| changes | 实际变化的要素(before/after 不同才记录):字段、变更前后值、来源与对话原文引用 |
+| conflicts | 本次触发中保留原值的冲突主张(current=原值、proposed=冲突主张值) |
+| version | 本次更新后的画像版本(与画像报告/当前画像的 version 一致) |
+| total / page / page_size | 分页信息(遵循架构 §5.1 分页规范);无画像或暂无事件时 items 为空列表(不报 404) |
+
+**错误**
+
+| code | HTTP | 场景 |
+|---|---|---|
+| 40001 | 400 | page < 1;page_size 超出 1~100 |
+| 40101 | 401 | 未认证 |
+| 40102 | 401 | Token 过期 |
 
 ---
 

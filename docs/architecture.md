@@ -85,7 +85,7 @@
 | `app/api/`(Controller 层) | 路由、参数校验、鉴权依赖、SSE 流封装;无业务逻辑 | 第 5 章接口规范 |
 | `app/services/` | 业务编排:画像建模与更新、持仓分析、咨询会话、报告组装、逻辑链/溯源查询、幻觉检测、合规审核 | US-01~30 对应服务 |
 | `app/agents/`(LangGraph) | 主协调图(supervisor)+ 4 个专业智能体节点 + 校验/分歧/合规节点;智能体工具注册表 | US-14~18、BR-AGT |
-| `app/repositories/` | SQLAlchemy 数据访问封装:users / profiles / holdings / sessions / messages / advices / citations / agent_runs / compliance_logs | 数据模型第 4 章 |
+| `app/repositories/` | SQLAlchemy 数据访问封装:users / profiles / profile_updates / holdings / sessions / messages / advices / citations / agent_runs / compliance_logs | 数据模型第 4 章 |
 | `app/datasource/` | 外部数据适配器:SkillHub(问财)、实时行情、财经新闻、研究报告;统一 `DataSource` 抽象接口 + 白名单校验 + 溯源标识注入 | BR-DAT-01~04、TC-01/03 |
 | `app/models/` | SQLAlchemy ORM 模型与 Pydantic Schema(请求/响应) | 第 4 章 |
 | `app/core/` | 配置(环境变量)、JWT、日志、trace_id 中间件、限流、监控指标、异常处理器 | BR-CMP、BR-PER |
@@ -201,8 +201,9 @@ async def submit_questionnaire(...):
 ### 4.1 ER 关系图
 
 ```
-users ──1:1── user_profiles ──1:N── (版本历史:同表 version 递增)
+users ──1:1── user_profiles (版本历史:version 递增 + profile_update_events 留痕)
   │
+  ├─1:N─ profile_update_events  (画像更新历史,US-05)
   ├─1:N─ holdings              (持仓)
   ├─1:N─ questionnaire_responses
   ├─1:N─ chat_sessions ──1:N── chat_messages ──N:1── advices
@@ -240,6 +241,20 @@ users ──1:1── user_profiles ──1:N── (版本历史:同表 version
 | source_trace | JSON | 逐要素溯源与待确认冲突(BR-DAT-04、BR-IMG-05,US-04):`{elements: {字段: {source, quote, version, updated_at}}, conflicts: [...]}` |
 | version | INT | 版本号,更新递增(US-05 更新历史) |
 | updated_at | TIMESTAMP | |
+
+**profile_update_events 画像更新历史**(US-05,已实现)
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | BIGINT PK | |
+| user_id | BIGINT FK | 画像所属用户(索引) |
+| version | INT | 本次更新后的画像版本(与 user_profiles.version 对应) |
+| trigger | VARCHAR(20) | 触发来源:问卷测评/对话更新/持仓更新/用户修正/用户确认 |
+| changes | JSON | 实际变化的要素:[{field, before, after, source, quote}] |
+| conflicts | JSON | 保留原值的冲突主张:[{field, current, proposed, source, quote}] |
+| created_at | TIMESTAMP | 事件时间(何时) |
+
+> 每次画像版本递增与画像同事务写入一条事件(BR-IMG-06:何时/因何/哪一要素变化);事件构建与触发标签单点定义于 app/services/profile_history.py。
 
 **questionnaires / questionnaire_responses 问卷与作答**(US-01)
 
@@ -390,6 +405,7 @@ users ──1:1── user_profiles ──1:N── (版本历史:同表 version
 | GET | /api/v1/profile/report | 画像报告(含溯源与推断依据) | US-04 |
 | PUT | /api/v1/profile | 确认/修正画像 | US-04、BR-IMG-05 |
 | GET | /api/v1/profile | 当前画像 | US-04 |
+| GET | /api/v1/profile/history | 画像更新历史(分页,最新在前) | US-05、BR-IMG-06 |
 | POST | /api/v1/chat/sessions | 创建咨询会话 | US-20 |
 | GET | /api/v1/chat/sessions | 会话列表(分页) | US-20 |
 | POST | /api/v1/chat/sessions/{session_id}/messages | 发送咨询消息(SSE 流式,多智能体链路入口) | UC-02~07 |
