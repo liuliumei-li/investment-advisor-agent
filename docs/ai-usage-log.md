@@ -12,7 +12,10 @@
 | 2026-09-20 | DeepSeek deepseek-chat(真实调用,3 次) | US-02 对话画像冒烟测试:单消息三要素抽取(25% 回撤 → C3)、追问澄清(C1 判断)、多轮合并与冲突保留验证 | 运行验证(HTTP + 真实 Redis),无代码变更;调用经 app/llm 适配层,用量由 app.llm 日志记录 |
 | 2026-09-20 | Claude Code | US-03 持仓历史分析:holdings/holding_snapshots 模型与迁移、三种导入方式(清单/CSV/文本 LLM 抽取)、分析引擎(集中度/资产分布/换手/BR-IMG-04 反推风险等级)、画像合并与偏差提示(≥2 档)、API 与测试(新增 45 例);requirements.md v1.2 补定量化规则 | backend/app/models/holding.py、backend/app/repositories/holding_repo.py、backend/app/services/holdings_service.py、backend/app/services/holdings_analysis.py、backend/app/services/profile_service.py、backend/app/api/routers/profile.py、backend/app/schemas/holdings.py、backend/alembic/、backend/pyproject.toml(新增 python-multipart)、backend/tests/、docs/requirements.md、docs/api.md、docs/architecture.md、本文档 |
 | 2026-09-21 | Claude Code | US-04 画像报告可视化:source_trace 溯源持久化(迁移 f9fc8dd8995c)、三合并路径冲突持久化与问卷重提不覆盖修复、报告/当前画像/确认修正三接口(GET /report、GET /profile、PUT /profile)、雷达评分归一与报告维度构建、新增测试 67 例;requirements.md v1.3 补定量化规则 | backend/app/models/user_profile.py、backend/app/services/profile_report.py、backend/app/services/profile_report_service.py、backend/app/services/profile_service.py、backend/app/api/routers/profile.py、backend/app/schemas/profile.py、backend/alembic/、backend/tests/、docs/requirements.md、docs/api.md、docs/architecture.md、本文档 |
+| 2026-09-21 | Claude Code | US-05 画像动态更新:profile_update_events 更新历史表(迁移 462d3a7e1d90)、四更新路径(问卷测评/对话/持仓/确认修正)同事务事件记录、GET /api/v1/profile/history 分页查询、新增测试 19 例;requirements.md v1.4 补定量化规则 | backend/app/models/profile_update_event.py、backend/app/repositories/profile_update_repo.py、backend/app/services/profile_history.py、backend/app/services/profile_service.py、backend/app/services/profile_report_service.py、backend/app/api/routers/profile.py、backend/alembic/、backend/tests/、docs/requirements.md、docs/api.md、docs/architecture.md、本文档 |
 
 > 注:US-03 开发与测试全程使用 FakeLLM 替身,无真实大模型调用。
+
+| 2026-09-21 | DeepSeek deepseek-chat(真实调用,1 次) | E1 全链路演示冒烟:对话画像三要素一次抽取(20% 回撤→C2、收益预期、期限),验证冲突保留与报告披露链路 | 运行验证(HTTP + 真实 Redis),无代码变更;调用经 app/llm 适配层,用量由 app.llm 日志记录 |
 
 说明:自 2026-09-20 起(US-02 冒烟测试)开发阶段已开始真实调用第三方大模型(DeepSeek),上表按次补充(模型、用途、时间、影响范围);开发辅助类 AI(Claude Code)调用与真实 LLM 调用分行记录。

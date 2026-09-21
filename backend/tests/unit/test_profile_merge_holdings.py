@@ -4,6 +4,7 @@ from decimal import Decimal
 
 from app.models.user_profile import RiskLevel, UserProfile
 from app.repositories.profile_repo import ProfileRepository
+from app.repositories.profile_update_repo import ProfileUpdateRepository
 from app.repositories.questionnaire_repo import QuestionnaireRepository
 from app.services.profile_service import ProfileService
 
@@ -32,6 +33,13 @@ class TestMergeHoldingsFields:
         assert profile.source_mix == {"holdings": 1.0}
         assert float(profile.confidence) == 0.50
         assert profile.version == 1
+        # US-05 AC-3:持仓初始化画像同样留痕
+        events = await ProfileUpdateRepository(db_session).list_for_user(1, 0, 10)
+        assert len(events) == 1
+        assert events[0].trigger == "持仓更新"
+        assert events[0].changes[0] == {
+            "field": "risk_level", "before": None, "after": "C5", "source": "持仓", "quote": None
+        }
 
     async def test_existing_profile_updates_summary_and_version(self, db_session, cache):
         service = make_service(db_session, cache)

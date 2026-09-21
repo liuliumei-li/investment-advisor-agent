@@ -3,6 +3,8 @@
 仅做编排:评分规则在 risk_scoring,数据访问在 Repository,缓存经 app/cache。
 US-04:各来源采纳/冲突的逐要素溯源(source/quote/version/时间戳)写入 user_profiles.source_trace,
 待确认冲突保留披露,由画像报告展示、用户确认或修正(BR-IMG-05、BR-DAT-04)。
+US-05:每次版本递增同步写入 profile_update_events 更新历史(何时/因何/哪一要素变化,BR-IMG-06),
+事件构建纯函数在 profile_history。
 """
 
 from decimal import Decimal
@@ -11,11 +13,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.cache.redis_client import Cache, profile_cache_key
 from app.core.exceptions import NotFound, ValidationFailed
+from app.models.profile_update_event import ProfileUpdateEvent
 from app.models.questionnaire_response import QuestionnaireResponse
 from app.models.user_profile import RISK_LEVEL_LABELS, RiskLevel, UserProfile
 from app.repositories.profile_repo import ProfileRepository
+from app.repositories.profile_update_repo import ProfileUpdateRepository
 from app.repositories.questionnaire_repo import QuestionnaireRepository
 from app.services.holdings_analysis import risk_deviation
+from app.services.profile_history import (
+    TRIGGER_DIALOG,
+    TRIGGER_HOLDINGS,
+    TRIGGER_QUESTIONNAIRE,
+    build_update_event,
+)
 from app.services.profile_report import (
     TRACE_SOURCE_DIALOG,
     TRACE_SOURCE_HOLDINGS,
@@ -93,6 +103,29 @@ class ProfileService:
             profile = UserProfile(user_id=user_id, version=1)
         else:
             profile.version += 1  # BR-IMG-06:画像更新以版本递增留痕
+        # US-05 AC-3:更新历史(变更前值,供事件记录;问卷权威覆盖三要素)
+        questionnaire_updates = [
+            {
+                "field": "risk_level",
+                "before": profile.risk_level.value if profile.risk_level is not None else None,
+                "after": risk_level.value,
+                "source": TRACE_SOURCE_QUESTIONNAIRE,
+            },
+            {
+                "field": "return_expectation",
+                "before": [_to_float(profile.return_expectation_low), _to_float(profile.return_expectation_high)]
+                if profile.return_expectation_low is not None
+                else None,
+                "after": [_to_float(fields["return_expectation_low"]), _to_float(fields["return_expectation_high"])],
+                "source": TRACE_SOURCE_QUESTIONNAIRE,
+            },
+            {
+                "field": "investment_horizon",
+                "before": profile.investment_horizon,
+                "after": fields["investment_horizon"],
+                "source": TRACE_SOURCE_QUESTIONNAIRE,
+            },
+        ]
         profile.risk_level = risk_level
         profile.return_expectation_low = _as_decimal(fields["return_expectation_low"])
         profile.return_expectation_high = _as_decimal(fields["return_expectation_high"])
@@ -118,6 +151,11 @@ class ProfileService:
             trace = set_element_trace(trace, field, entry)
             trace = remove_conflict(trace, field)
         profile.source_trace = trace
+        # US-05 AC-3:更新历史(何时/因何/哪一要素,BR-IMG-06),与画像同事务落库
+        event = ProfileUpdateEvent(
+            **build_update_event(user_id, profile.version, TRIGGER_QUESTIONNAIRE, questionnaire_updates)
+        )
+        await ProfileUpdateRepository(self.session).add(event)
         await self.profile_repo.save(profile)
         await self.session.commit()
         await self.cache.delete(profile_cache_key(user_id))
@@ -194,6 +232,13 @@ class ProfileService:
                         profile.version,
                     )
             profile.source_trace = trace
+            # US-05 AC-3:更新历史(采纳项与冲突主张分别记录,BR-IMG-06)
+            applied_updates = [u for u in updates if u["applied"]]
+            conflict_updates = [u for u in updates if not u["applied"]]
+            event = ProfileUpdateEvent(
+                **build_update_event(user_id, profile.version, TRIGGER_DIALOG, applied_updates, conflict_updates)
+            )
+            await ProfileUpdateRepository(self.session).add(event)
             await self.profile_repo.save(profile)
             await self.session.commit()
             await self.cache.delete(profile_cache_key(user_id))
@@ -276,6 +321,13 @@ class ProfileService:
                         profile.version,
                     )
             profile.source_trace = trace
+            # US-05 AC-3:更新历史(采纳项与冲突主张分别记录,BR-IMG-06)
+            applied_updates = [u for u in updates if u["applied"]]
+            conflict_updates = [u for u in updates if not u["applied"]]
+            event = ProfileUpdateEvent(
+                **build_update_event(user_id, profile.version, TRIGGER_HOLDINGS, applied_updates, conflict_updates)
+            )
+            await ProfileUpdateRepository(self.session).add(event)
             await self.profile_repo.save(profile)
             await self.session.commit()
             await self.cache.delete(profile_cache_key(user_id))

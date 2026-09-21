@@ -7,6 +7,7 @@ from app.core.exceptions import NotFound, ValidationFailed
 from app.data.questionnaire_v1 import QUESTIONNAIRE_V1
 from app.models.user_profile import RiskLevel
 from app.repositories.profile_repo import ProfileRepository
+from app.repositories.profile_update_repo import ProfileUpdateRepository
 from app.repositories.questionnaire_repo import QuestionnaireRepository
 from app.services.profile_service import ProfileService, validate_answers
 from tests.helpers import full_answers
@@ -208,3 +209,44 @@ class TestSubmitQuestionnaireTrace:
         profile = await ProfileRepository(db_session).get_by_user_id(1)
         assert profile.source_trace["conflicts"] == []
         assert profile.source_trace["elements"]["risk_level"]["source"] == "问卷"
+
+
+class TestSubmitQuestionnaireHistory:
+    """US-05 AC-3:问卷测评写入更新历史(何时/因何/哪一要素,BR-IMG-06)。"""
+
+    async def test_first_submit_records_history_event(self, db_session, cache, seeded_questionnaire):
+        service = make_service(db_session, cache)
+        await service.submit_questionnaire(1, seeded_questionnaire, full_answers(QUESTIONS))
+
+        events = await ProfileUpdateRepository(db_session).list_for_user(1, 0, 10)
+        assert len(events) == 1
+        event = events[0]
+        assert event.version == 1
+        assert event.trigger == "问卷测评"
+        assert event.changes == [
+            {"field": "risk_level", "before": None, "after": "C4", "source": "问卷", "quote": None},
+            {"field": "return_expectation", "before": None, "after": [6.0, 10.0], "source": "问卷", "quote": None},
+            {"field": "investment_horizon", "before": None, "after": "中期", "source": "问卷", "quote": None},
+        ]
+        assert event.conflicts == []
+
+    async def test_resubmit_records_before_after_diffs(self, db_session, cache, seeded_questionnaire):
+        service = make_service(db_session, cache)
+        await service.submit_questionnaire(1, seeded_questionnaire, full_answers(QUESTIONS))
+        # 重测全选 a:总分 20 → C1,收益预期/期限随之变化
+        await service.submit_questionnaire(1, seeded_questionnaire, full_answers(QUESTIONS, option_id="a"))
+
+        events = await ProfileUpdateRepository(db_session).list_for_user(1, 0, 10)
+        assert len(events) == 2
+        latest = events[0]  # 按 id 降序,最新在前
+        assert latest.version == 2
+        assert latest.trigger == "问卷测评"
+        risk_change = next(c for c in latest.changes if c["field"] == "risk_level")
+        assert risk_change["before"] == "C4" and risk_change["after"] == "C1"
+        assert risk_change["source"] == "问卷"
+
+    async def test_no_event_when_validation_fails(self, db_session, cache, seeded_questionnaire):
+        service = make_service(db_session, cache)
+        with pytest.raises(ValidationFailed):
+            await service.submit_questionnaire(1, seeded_questionnaire, full_answers(QUESTIONS)[:-1])
+        assert await ProfileUpdateRepository(db_session).count_for_user(1) == 0
