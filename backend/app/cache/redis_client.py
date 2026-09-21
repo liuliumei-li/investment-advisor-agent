@@ -20,6 +20,9 @@ PROFILE_CACHE_TTL_SECONDS = 600
 # session:ctx:{session_id}:多轮对话上下文(US-02 对话画像、US-20 咨询会话),30 分钟 TTL 活动续期
 SESSION_CTX_TTL_SECONDS = 1800
 
+# quote:{code}:行情缓存,5 秒 TTL,值内含时间戳读取时校验时效(BR-DAT-03,architecture.md §4.4)
+QUOTE_CACHE_TTL_SECONDS = 5
+
 
 def profile_cache_key(user_id: int) -> str:
     return f"profile:{user_id}"
@@ -27,6 +30,10 @@ def profile_cache_key(user_id: int) -> str:
 
 def session_ctx_key(session_id: str) -> str:
     return f"session:ctx:{session_id}"
+
+
+def quote_cache_key(code: str) -> str:
+    return f"quote:{code}"
 
 
 class Cache:

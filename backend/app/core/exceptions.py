@@ -46,6 +46,12 @@ class TooManyRequests(BizError):
     message = "请求过于频繁"
 
 
+class DataSourceUnavailable(BizError):
+    code = 50003
+    http_status = 500
+    message = "数据源不可用"
+
+
 class LLMServiceError(BizError):
     code = 50004
     http_status = 500
