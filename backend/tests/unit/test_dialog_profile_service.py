@@ -8,6 +8,7 @@ from app.core.exceptions import ValidationFailed
 from app.data.questionnaire_v1 import QUESTIONNAIRE_V1
 from app.models.user_profile import RiskLevel, UserProfile
 from app.repositories.profile_repo import ProfileRepository
+from app.repositories.profile_update_repo import ProfileUpdateRepository
 from app.repositories.questionnaire_repo import QuestionnaireRepository
 from app.services.dialog_profile_service import DialogExtraction, DialogProfileService, validate_extraction
 from app.services.profile_service import ProfileService, build_dialog_updates
@@ -224,6 +225,41 @@ class TestMergeDialogFields:
         assert conflicts[0]["proposed"] == "C2"
         assert conflicts[0]["quote"] == "回撤最多 10% 到 20%"
         assert profile.risk_level == RiskLevel.C4  # 冲突始终保留原值
+
+    async def test_conflict_round_records_history_event(self, db_session, cache, seeded_questionnaire):
+        profile_service = make_profile_service(db_session, cache)
+        await profile_service.submit_questionnaire(1, seeded_questionnaire, full_answers(QUESTIONS))  # C4
+        await profile_service.merge_dialog_fields(
+            1,
+            {
+                "risk_tolerance": {"level": "C1", "evidence": "我完全不想亏钱"},
+                "holding_habit": {"summary": "重仓白酒", "evidence": "我主要拿的是白酒股"},
+            },
+        )
+        # US-05 AC-3:冲突轮也留痕——因何(对话更新)、采纳项与冲突主张分别记录
+        events = await ProfileUpdateRepository(db_session).list_for_user(1, 0, 10)
+        assert len(events) == 2
+        dialog_event = events[0]
+        assert dialog_event.version == 2
+        assert dialog_event.trigger == "对话更新"
+        assert dialog_event.changes == [
+            {
+                "field": "holding_habit_summary",
+                "before": None,
+                "after": "重仓白酒",
+                "source": "对话",
+                "quote": "我主要拿的是白酒股",
+            }
+        ]
+        assert dialog_event.conflicts == [
+            {
+                "field": "risk_level",
+                "current": "C4",
+                "proposed": "C1",
+                "source": "对话",
+                "quote": "我完全不想亏钱",
+            }
+        ]
 
     async def test_consistent_dialog_merges_without_conflict(self, db_session, cache, seeded_questionnaire):
         profile_service = make_profile_service(db_session, cache)

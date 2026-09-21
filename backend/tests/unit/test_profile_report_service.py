@@ -294,3 +294,72 @@ class TestConfirmOrAmend:
         assert await cache.get_json(profile_cache_key(1)) is not None
         await service.confirm_or_amend(1, True, [])
         assert await cache.get_json(profile_cache_key(1)) is None
+
+    async def test_amend_records_history_event(self, db_session, cache, seeded_questionnaire):
+        await make_profile_service(db_session, cache).submit_questionnaire(
+            1, seeded_questionnaire, full_answers(QUESTIONS)
+        )
+        await make_report_service(db_session, cache).confirm_or_amend(
+            1, False, [{"field": "risk_level", "value": "C2"}]
+        )
+        from app.repositories.profile_update_repo import ProfileUpdateRepository
+
+        events = await ProfileUpdateRepository(db_session).list_for_user(1, 0, 10)
+        assert len(events) == 2
+        amend_event = events[0]
+        assert amend_event.trigger == "用户修正"
+        assert amend_event.version == 2
+        assert amend_event.changes == [
+            {"field": "risk_level", "before": "C4", "after": "C2", "source": "用户修正", "quote": None}
+        ]
+
+    async def test_confirm_records_history_event_without_changes(self, db_session, cache, seeded_questionnaire):
+        await make_profile_service(db_session, cache).submit_questionnaire(
+            1, seeded_questionnaire, full_answers(QUESTIONS)
+        )
+        await make_report_service(db_session, cache).confirm_or_amend(1, True, [])
+        from app.repositories.profile_update_repo import ProfileUpdateRepository
+
+        events = await ProfileUpdateRepository(db_session).list_for_user(1, 0, 10)
+        confirm_event = events[0]
+        assert confirm_event.trigger == "用户确认"
+        assert confirm_event.version == 2
+        assert confirm_event.changes == []
+
+    async def test_no_op_update_records_no_event(self, db_session, cache, seeded_questionnaire):
+        await make_profile_service(db_session, cache).submit_questionnaire(
+            1, seeded_questionnaire, full_answers(QUESTIONS)
+        )
+        await make_report_service(db_session, cache).confirm_or_amend(
+            1, False, [{"field": "risk_level", "value": "C4"}]
+        )
+        from app.repositories.profile_update_repo import ProfileUpdateRepository
+
+        assert await ProfileUpdateRepository(db_session).count_for_user(1) == 1  # 仅问卷事件
+
+
+class TestGetHistory:
+    async def test_empty_history_for_new_user(self, db_session, cache):
+        result = await make_report_service(db_session, cache).get_history(1, 1, 20)
+        assert result == {"items": [], "total": 0, "page": 1, "page_size": 20}
+
+    async def test_history_latest_first_with_pagination(self, db_session, cache, seeded_questionnaire):
+        profile_service = make_profile_service(db_session, cache)
+        await profile_service.submit_questionnaire(1, seeded_questionnaire, full_answers(QUESTIONS))  # v1
+        await profile_service.merge_dialog_fields(
+            1, {"risk_tolerance": {"level": "C2", "evidence": "回撤最多 10% 到 20%"}}
+        )  # v2 冲突
+        await make_report_service(db_session, cache).confirm_or_amend(1, True, [])  # v3
+
+        page1 = await make_report_service(db_session, cache).get_history(1, 1, 2)
+        assert page1["total"] == 3
+        assert [item["version"] for item in page1["items"]] == [3, 2]  # 最新在前
+        assert page1["items"][0]["trigger"] == "用户确认"
+        assert page1["items"][1]["trigger"] == "对话更新"
+        assert page1["items"][1]["conflicts"][0]["proposed"] == "C2"
+        assert all(item["created_at"] for item in page1["items"])
+
+        page2 = await make_report_service(db_session, cache).get_history(1, 2, 2)
+        assert [item["version"] for item in page2["items"]] == [1]
+        assert page2["items"][0]["trigger"] == "问卷测评"
+        assert page2["items"][0]["changes"][0]["field"] == "risk_level"

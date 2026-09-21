@@ -2,7 +2,8 @@
 
 - 报告为读模型:横跨画像与持仓两个聚合,维度构建纯函数在 profile_report;
 - 当前画像走 profile:{user_id} 热缓存 read-through(10 分钟 TTL,画像更新即失效);
-- 确认/修正:修正立即生效并写"用户修正"溯源、清除该字段待确认冲突;确认置 confirmed 并清空冲突。
+- 确认/修正:修正立即生效并写"用户修正"溯源、清除该字段待确认冲突;确认置 confirmed 并清空冲突;
+- US-05:确认/修正写入 profile_update_events 更新历史,并提供历史分页查询(AC-3、BR-IMG-06)。
 """
 
 from decimal import Decimal
@@ -11,10 +12,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.cache.redis_client import PROFILE_CACHE_TTL_SECONDS, Cache, profile_cache_key
 from app.core.exceptions import NotFound, ValidationFailed
+from app.models.profile_update_event import ProfileUpdateEvent
 from app.models.user_profile import RiskLevel
 from app.repositories.holding_repo import HoldingRepository
 from app.repositories.profile_repo import ProfileRepository
+from app.repositories.profile_update_repo import ProfileUpdateRepository
 from app.services.holdings_analysis import analyze_holdings
+from app.services.profile_history import TRIGGER_CONFIRMATION, TRIGGER_USER_CORRECTION, build_update_event
 from app.services.profile_report import (
     TRACE_SOURCE_USER_CORRECTION,
     build_dimensions,
@@ -157,11 +161,43 @@ class ProfileReportService:
             profile.confirmed = True
             trace = clear_conflicts(trace)
         profile.source_trace = trace
+        # US-05 AC-3:更新历史(确认/修正事件,BR-IMG-06);修正项 before/after 记入 changes
+        trigger = TRIGGER_CONFIRMATION if confirm else TRIGGER_USER_CORRECTION
+        event_updates = [
+            {**change, "source": TRACE_SOURCE_USER_CORRECTION} for change in applied
+        ]
+        event = ProfileUpdateEvent(**build_update_event(user_id, profile.version, trigger, event_updates))
+        await ProfileUpdateRepository(self.session).add(event)
         await self.profile_repo.save(profile)
         await self.session.commit()
         await self.cache.delete(profile_cache_key(user_id))
         await self.session.refresh(profile)  # 读取 server_default 时间戳
         return self._update_result(profile, applied)
+
+    async def get_history(self, user_id: int, page: int, page_size: int) -> dict:
+        """画像更新历史分页(AC-3:何时/因何/由哪一要素变化引起,BR-IMG-06)。
+
+        无画像或暂无事件时返回空列表;按时间倒序(最新在前)。
+        """
+        repo = ProfileUpdateRepository(self.session)
+        total = await repo.count_for_user(user_id)
+        items = await repo.list_for_user(user_id, (page - 1) * page_size, page_size)
+        return {
+            "items": [
+                {
+                    "id": event.id,
+                    "version": event.version,
+                    "trigger": event.trigger,
+                    "changes": event.changes or [],
+                    "conflicts": event.conflicts or [],
+                    "created_at": event.created_at.isoformat() if event.created_at else None,
+                }
+                for event in items
+            ],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+        }
 
     async def _holdings_info(self, user_id: int) -> dict | None:
         """最新快照的持仓分散度(报告持仓习惯轴分数来源)与快照时间。"""
