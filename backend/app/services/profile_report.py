@@ -63,6 +63,20 @@ HORIZON_SCORE_MAP = {"短期": 33, "中期": 67, "长期": 100}
 # 收益预期映射分母:区间中点年化达到 25% 及以上视为满分
 EXPECTATION_SCORE_CAP = 25.0
 
+# BR-IMG-04 基线参考矩阵:风险等级 → 股票类资产建议仓位上限(requirements.md §6.1)
+STOCK_CAP_BY_RISK: dict[RiskLevel, str] = {
+    RiskLevel.C1: "≤20%",
+    RiskLevel.C2: "≤40%",
+    RiskLevel.C3: "40%~60%",
+    RiskLevel.C4: "60%~80%",
+    RiskLevel.C5: "不限",
+}
+
+
+def stock_cap_for_level(level: RiskLevel) -> str:
+    """风险等级 → 股票类仓位上限(BR-IMG-04,建议个性化匹配的确定性依据)。"""
+    return STOCK_CAP_BY_RISK[level]
+
 
 def incomplete_sources(source_mix: dict | None) -> list[str]:
     """尚未收集的画像来源(BR-IMG-03 提示,UC-01)。"""
