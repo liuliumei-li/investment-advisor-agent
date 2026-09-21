@@ -3,7 +3,7 @@
 > 通用规范(统一响应信封、错误码表、鉴权约定)见 [architecture.md](architecture.md) §5.1;本文档登记**已实现**接口。
 > 完整接口规划见 architecture.md §5.2(未实现的接口不在此登记)。
 
-## 已实现接口(US-01、US-02、US-03,2026-09-20)
+## 已实现接口(US-01 ~ US-04,2026-09-21)
 
 | 方法 | 路径 | 说明 | 鉴权 | 关联 |
 |---|---|---|---|---|
@@ -15,6 +15,9 @@
 | POST | /api/v1/profile/dialog | 对话画像:多轮抽取/追问,完成时返回画像更新 diff | 是 | US-02、UC-01 |
 | POST | /api/v1/profile/import | 持仓导入并分析(清单粘贴 / 文本描述) | 是 | US-03、UC-01 |
 | POST | /api/v1/profile/import/csv | 持仓 CSV 文件导入并分析 | 是 | US-03、UC-01 |
+| GET | /api/v1/profile/report | 画像报告:四要素维度、雷达分数、逐要素溯源与待确认冲突 | 是 | US-04、UC-01 |
+| GET | /api/v1/profile | 当前画像(紧凑视图) | 是 | US-04 AC-4 |
+| PUT | /api/v1/profile | 确认画像 / 修正个别要素 | 是 | US-04 AC-3、BR-IMG-05 |
 
 所有接口响应均为统一信封:`{ "code": 0, "message": "ok", "data": ..., "trace_id": "..." }`;`code=0` 表示成功,`trace_id` 同时写入响应头 `X-Trace-Id`。
 
@@ -423,6 +426,172 @@
 | 50004 | 500 | LLM 服务不可用(文本描述抽取) |
 
 ---
+
+## 8. GET /api/v1/profile/report
+
+画像报告(US-04 AC-1/AC-2/AC-4):四要素维度(chart-ready,供 RiskRadar 雷达图渲染)、逐要素溯源与待确认冲突披露;报告可在任意会话随时调出。
+
+**请求头**:`Authorization: Bearer <access_token>`
+
+**成功响应(200)**
+
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "profile_id": 1,
+    "version": 3,
+    "confirmed": false,
+    "confidence": 0.85,
+    "source_mix": { "questionnaire": 0.5, "dialog": 0.5 },
+    "incomplete_sources": ["持仓"],
+    "updated_at": "2026-09-21T10:00:00+00:00",
+    "dimensions": [
+      {
+        "key": "risk_level", "label": "风险等级",
+        "display": "C4", "display_label": "进取型",
+        "score": 80,
+        "source": "问卷", "quote": null, "source_version": 1,
+        "updated_at": "2026-09-20T08:00:00+00:00", "score_updated_at": null
+      },
+      {
+        "key": "return_expectation", "label": "收益预期",
+        "display": "6%~10%", "display_label": null,
+        "score": 32,
+        "source": "对话", "quote": "希望年化 6% 到 10%", "source_version": 2,
+        "updated_at": "2026-09-21T09:00:00+00:00", "score_updated_at": null
+      },
+      {
+        "key": "investment_horizon", "label": "投资期限",
+        "display": "中期", "display_label": null,
+        "score": 67, "source": "问卷", "quote": null, "source_version": 1,
+        "updated_at": "2026-09-20T08:00:00+00:00", "score_updated_at": null
+      },
+      {
+        "key": "holding_habit_summary", "label": "持仓习惯",
+        "display": "持仓 4 只;市值集中于 贵州茅台、五粮液;集中度高(前三合计 90.0%);资产分布:股票 70.0%、ETF 20.0%、基金 10.0%。",
+        "display_label": null, "score": 10,
+        "source": "持仓", "quote": null, "source_version": 2,
+        "updated_at": "2026-09-21T09:30:00+00:00",
+        "score_updated_at": "2026-09-21T09:30:00+00:00"
+      }
+    ],
+    "conflicts": [
+      {
+        "field": "risk_level", "current": "C4", "proposed": "C1",
+        "source": "对话", "quote": "我完全不想亏钱",
+        "version": 2, "created_at": "2026-09-21T09:00:00+00:00"
+      }
+    ]
+  },
+  "trace_id": "7f3a2c1d9e0b4a6f"
+}
+```
+
+字段说明:
+
+| 字段 | 说明 |
+|---|---|
+| dimensions | 四要素定长数组(风险等级/收益预期/投资期限/持仓习惯);`score` 为 0~100 雷达数值(归一规则见 requirements.md v1.3),`display`/`display_label` 为文本展示值 |
+| dimensions.source / quote / source_version / updated_at | 逐要素推断依据来源(BR-DAT-04):来源(问卷/对话/持仓/用户修正)、对话原文引用、写入时画像版本与时间戳;存量画像(US-04 前建立)为 null |
+| dimensions.score_updated_at | 分数数据时点;仅持仓习惯轴(按最新快照分散度实时计算)非空 |
+| conflicts | 待确认冲突(BR-IMG-05):来源合并时与既有画像冲突被保留原值,此处披露冲突主张,待用户确认或修正;修正该要素或确认画像后清除 |
+
+**错误**
+
+| code | HTTP | 场景 |
+|---|---|---|
+| 40101 | 401 | 未认证 |
+| 40102 | 401 | Token 过期 |
+| 40401 | 404 | 画像不存在(尚未通过问卷/对话/持仓导入建立) |
+
+---
+
+## 9. GET /api/v1/profile
+
+当前画像紧凑视图(US-04 AC-4)。读 `profile:{user_id}` 热缓存(10 分钟 TTL,画像更新即失效)。
+
+**请求头**:`Authorization: Bearer <access_token>`
+
+**成功响应(200)**
+
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "risk_level": "C4",
+    "risk_level_name": "进取型",
+    "return_expectation_low": 6.0,
+    "return_expectation_high": 10.0,
+    "investment_horizon": "中期",
+    "holding_habit_summary": "持仓 4 只;……",
+    "source_mix": { "questionnaire": 0.5, "holdings": 0.5 },
+    "confidence": 0.85,
+    "confirmed": true,
+    "version": 4,
+    "updated_at": "2026-09-21T10:00:00+00:00"
+  },
+  "trace_id": "7f3a2c1d9e0b4a6f"
+}
+```
+
+**错误**:同 GET /api/v1/profile/report(40101 / 40102 / 40401)。
+
+---
+
+## 10. PUT /api/v1/profile
+
+确认画像或修正个别要素(US-04 AC-3、BR-IMG-05)。修正立即生效(写"用户修正"溯源并清除该字段待确认冲突);确认置 `confirmed=true` 并清空全部冲突。单次请求版本最多递增一次;修正同值或重复确认不递增版本。修正不改变 source_mix/confidence(用户修正不是证据来源)。
+
+**请求头**:`Authorization: Bearer <access_token>`
+
+**请求体**
+
+```json
+{
+  "confirm": true,
+  "amendments": [
+    { "field": "risk_level", "value": "C2" },
+    { "field": "return_expectation", "value": { "low": 5, "high": 9 } },
+    { "field": "investment_horizon", "value": "长期" },
+    { "field": "holding_habit_summary", "value": "长期持有蓝筹,换手较低" }
+  ]
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| confirm | bool | 否 | 确认画像(BR-IMG-05);与 amendments 至少其一 |
+| amendments | array | 否 | 修正个别要素(≤4 条,同字段不可重复);`field` 取值:`risk_level` / `return_expectation` / `investment_horizon` / `holding_habit_summary` |
+
+修正值约束:risk_level ∈ C1~C5;return_expectation 为 `{low, high}` 且 0 ≤ low ≤ high ≤ 100;investment_horizon ∈ 短期/中期/长期;holding_habit_summary 非空且 ≤500 字。
+
+**成功响应(200)**:与 GET /api/v1/profile 同形的当前画像,追加:
+
+```json
+{
+  "...": "同 GET /api/v1/profile 的 data",
+  "applied_amendments": [
+    { "field": "risk_level", "before": "C4", "after": "C2" }
+  ],
+  "conflicts_remaining": []
+}
+```
+
+**错误**
+
+| code | HTTP | 场景 |
+|---|---|---|
+| 40001 | 400 | confirm 与 amendments 均为空;修正字段不可识别;风险等级/收益预期/投资期限取值不合法;收益预期 low > high;同字段重复修正 |
+| 40101 | 401 | 未认证 |
+| 40102 | 401 | Token 过期 |
+| 40401 | 404 | 画像不存在 |
+
+---
+
+## 附录:问卷评分规则(BR-IMG-07)
 
 ## 附录:问卷评分规则(BR-IMG-07)
 

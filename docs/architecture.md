@@ -237,6 +237,7 @@ users ──1:1── user_profiles ──1:N── (版本历史:同表 version
 | source_mix | JSON | 三来源权重:问卷/对话/持仓(BR-IMG-03) |
 | confidence | NUMERIC(3,2) | 画像置信度(信息不完整时降低) |
 | confirmed | BOOLEAN | 是否经用户确认(BR-IMG-05) |
+| source_trace | JSON | 逐要素溯源与待确认冲突(BR-DAT-04、BR-IMG-05,US-04):`{elements: {字段: {source, quote, version, updated_at}}, conflicts: [...]}` |
 | version | INT | 版本号,更新递增(US-05 更新历史) |
 | updated_at | TIMESTAMP | |
 
@@ -337,7 +338,7 @@ users ──1:1── user_profiles ──1:N── (版本历史:同表 version
 | 键模式 | TTL | 用途 | 对应需求 |
 |---|---|---|---|
 | `session:ctx:{session_id}` | 30 min(活动续期) | 会话上下文,多轮记忆(US-02 对话画像、US-20 咨询会话) | US-02、US-20 |
-| `profile:{user_id}` | 10 min | 画像热缓存;画像更新即失效 | US-05、BR-IMG-06 |
+| `profile:{user_id}` | 10 min | 画像热缓存:GET /api/v1/profile read-through 读取(US-04);画像更新即失效 | US-04、US-05、BR-IMG-06 |
 | `quote:{code}` | 5 s | 行情缓存;值内含时间戳,读取时校验时效 | BR-DAT-03 |
 | `rate:{user_id}:{window}` | 窗口长度 | 限流计数(保护并发容量) | BR-PER-01 |
 | `degrade:flags` | 无(运维维护) | 降级信号:数据源故障/超载开关 | BR-PER-04 |

@@ -1,4 +1,7 @@
-"""画像接口:问卷获取/提交/作答查询、对话画像、持仓导入与分析(Controller 仅取参 → 调 Service → 返回)。"""
+"""画像接口:问卷获取/提交/作答查询、对话画像、持仓导入与分析、画像报告与确认修正。
+
+Controller 仅取参 → 调 Service → 返回。
+"""
 
 from fastapi import APIRouter, Depends, File, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,9 +14,10 @@ from app.repositories.holding_repo import HoldingRepository
 from app.repositories.profile_repo import ProfileRepository
 from app.repositories.questionnaire_repo import QuestionnaireRepository
 from app.schemas.holdings import HoldingsImportRequest
-from app.schemas.profile import DialogMessageRequest, QuestionnaireSubmitRequest
+from app.schemas.profile import DialogMessageRequest, ProfileUpdateRequest, QuestionnaireSubmitRequest
 from app.services.dialog_profile_service import DialogProfileService
 from app.services.holdings_service import HoldingsService
+from app.services.profile_report_service import ProfileReportService
 from app.services.profile_service import ProfileService
 
 router = APIRouter(prefix="/api/v1/profile", tags=["profile"])
@@ -24,6 +28,13 @@ def get_profile_service(
     cache: Cache = Depends(get_cache),
 ) -> ProfileService:
     return ProfileService(QuestionnaireRepository(session), ProfileRepository(session), session, cache)
+
+
+def get_profile_report_service(
+    session: AsyncSession = Depends(get_db),
+    cache: Cache = Depends(get_cache),
+) -> ProfileReportService:
+    return ProfileReportService(ProfileRepository(session), HoldingRepository(session), session, cache)
 
 
 def get_dialog_profile_service(
@@ -102,4 +113,34 @@ async def import_holdings_csv(
     service: HoldingsService = Depends(get_holdings_service),
 ):
     result = await service.import_csv_and_analyze(user_id, await file.read())
+    return ApiResponse(data=result)
+
+
+@router.get("/report")
+async def get_profile_report(
+    user_id: int = Depends(get_current_user_id),
+    service: ProfileReportService = Depends(get_profile_report_service),
+):
+    result = await service.get_report(user_id)
+    return ApiResponse(data=result)
+
+
+@router.get("")
+async def get_current_profile(
+    user_id: int = Depends(get_current_user_id),
+    service: ProfileReportService = Depends(get_profile_report_service),
+):
+    result = await service.get_current(user_id)
+    return ApiResponse(data=result)
+
+
+@router.put("")
+async def update_profile(
+    payload: ProfileUpdateRequest,
+    user_id: int = Depends(get_current_user_id),
+    service: ProfileReportService = Depends(get_profile_report_service),
+):
+    result = await service.confirm_or_amend(
+        user_id, payload.confirm, [amendment.model_dump() for amendment in payload.amendments]
+    )
     return ApiResponse(data=result)
