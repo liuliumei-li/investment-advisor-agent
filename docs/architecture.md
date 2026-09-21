@@ -86,7 +86,7 @@
 | `app/services/` | 业务编排:画像建模与更新、持仓分析、咨询会话、报告组装、逻辑链/溯源查询、幻觉检测、合规审核 | US-01~30 对应服务 |
 | `app/agents/`(LangGraph) | 主协调图(supervisor)+ 4 个专业智能体节点 + 校验/分歧/合规节点;智能体工具注册表 | US-14~18、BR-AGT |
 | `app/repositories/` | SQLAlchemy 数据访问封装:users / profiles / profile_updates / holdings / sessions / messages / advices / citations / agent_runs / compliance_logs | 数据模型第 4 章 |
-| `app/datasource/` | 外部数据适配器:SkillHub(问财)、实时行情、财经新闻、研究报告;统一 `DataSource` 抽象接口 + 白名单校验 + 溯源标识注入 | BR-DAT-01~04、TC-01/03 |
+| `app/datasource/` | 外部数据适配器:统一 `DataSource` 抽象接口 + 白名单校验 + 溯源标识注入。US-06 已落地免费公开三源(东方财富指数行情/券商研报、新浪 7x24 快讯)+ 同花顺问财 SkillHub 适配器占位(凭据经 `SKILLHUB_TOKEN` 注入即启用);编排层 MarketDataService 提供行情 5 秒缓存与故障降级标注 | BR-DAT-01~04、TC-01/03 |
 | `app/models/` | SQLAlchemy ORM 模型与 Pydantic Schema(请求/响应) | 第 4 章 |
 | `app/core/` | 配置(环境变量)、JWT、日志、trace_id 中间件、限流、监控指标、异常处理器 | BR-CMP、BR-PER |
 | `app/cache/` | Redis 客户端封装与键规范(统一 TTL 管理、降级信号读写) | 第 4.4 节 |
@@ -286,14 +286,14 @@ users ──1:1── user_profiles (版本历史:version 递增 + profile_updat
 
 > 换手特征(US-03 AC-2)基于最近两个快照对比;此设计相对基线规划新增快照维度(基线规划仅表达"最新持仓"语义)。
 
-**chat_sessions / chat_messages 会话与消息**(US-20 上下文记忆)
+**chat_sessions / chat_messages 会话与消息**(US-20 上下文记忆,US-06 已实现)
 
 | 实体 | 关键字段 |
 |---|---|
 | chat_sessions | id, user_id FK, scenario ENUM('market','industry','stock','etf','cb','portfolio','general'), status, created_at, last_active_at |
 | chat_messages | id, session_id FK, role ENUM('user','assistant'), content TEXT, advice_id FK NULL, created_at |
 
-**advices 投顾建议**(BR-ADV-01 四要素落库)
+**advices 投顾建议**(BR-ADV-01 四要素落库,US-06 已实现)
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
@@ -319,7 +319,7 @@ users ──1:1── user_profiles (版本历史:version 递增 + profile_updat
 | source_type | ENUM('quote','news','research','profile') | 来源类型 |
 | data_point | TEXT | 数据点内容 |
 | source_url | VARCHAR(500) | 溯源链接 |
-| data_timestamp | TIMESTAMP | 数据时间戳(BR-DAT-03 时效依据) |
+| data_timestamp | VARCHAR(40) | 数据时间戳 ISO 字符串(US-06 落地形态,新闻/研报为发布时间,行情为抓取时间;BR-DAT-03 时效依据) |
 | verified | BOOLEAN | 幻觉检测校验结果(BR-DAT-05) |
 
 **agent_runs 智能体运行记录**(协作过程可视化,US-19)
