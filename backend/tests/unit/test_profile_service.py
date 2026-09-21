@@ -148,3 +148,63 @@ class TestGetLatestResponse:
         assert result["questionnaire_id"] == seeded_questionnaire
         assert result["risk_level_name"] == "进取型"
         assert result["created_at"]  # ISO 时间戳非空
+
+
+class TestSubmitQuestionnaireTrace:
+    """US-04 溯源:问卷提交写入三要素 trace(BR-DAT-04),重提不覆盖持仓来源(BR-IMG-03)。"""
+
+    async def test_first_submit_writes_three_element_traces(self, db_session, cache, seeded_questionnaire):
+        service = make_service(db_session, cache)
+        await service.submit_questionnaire(1, seeded_questionnaire, full_answers(QUESTIONS))
+
+        elements = (await ProfileRepository(db_session).get_by_user_id(1)).source_trace["elements"]
+        assert set(elements) == {"risk_level", "return_expectation", "investment_horizon"}
+        for entry in elements.values():
+            assert entry["source"] == "问卷"
+            assert entry["quote"] is None
+            assert entry["version"] == 1
+            assert entry["updated_at"]
+
+    async def test_resubmit_keeps_holding_summary_and_holdings_mix(
+        self, db_session, cache, seeded_questionnaire
+    ):
+        service = make_service(db_session, cache)
+        await service.submit_questionnaire(1, seeded_questionnaire, full_answers(QUESTIONS))
+        await service.merge_holdings_fields(
+            1, holding_habit_summary="持仓 3 只;集中度高。", inferred_risk_level=RiskLevel.C5, stock_share=0.9
+        )
+        profile = await ProfileRepository(db_session).get_by_user_id(1)
+        assert profile.holding_habit_summary is not None
+        assert profile.source_mix == {"questionnaire": 0.5, "holdings": 0.5}
+
+        result = await service.submit_questionnaire(1, seeded_questionnaire, full_answers(QUESTIONS))
+
+        # BR-IMG-03:重提问卷不覆盖持仓来源结论,来源集合均分、置信度随来源数提升
+        profile = await ProfileRepository(db_session).get_by_user_id(1)
+        assert profile.holding_habit_summary == "持仓 3 只;集中度高。"
+        assert profile.source_mix == {"questionnaire": 0.5, "holdings": 0.5}
+        assert float(profile.confidence) == 0.85
+        assert result["profile"]["holding_habit_summary"] == "持仓 3 只;集中度高。"
+        assert result["incomplete_sources"] == ["对话"]
+        # 持仓习惯 trace 保持持仓来源,三要素 trace 刷新为问卷
+        elements = profile.source_trace["elements"]
+        assert elements["holding_habit_summary"]["source"] == "持仓"
+        assert elements["risk_level"]["source"] == "问卷"
+        assert elements["risk_level"]["version"] == 3
+
+    async def test_resubmit_removes_stale_conflict_for_overwritten_field(
+        self, db_session, cache, seeded_questionnaire
+    ):
+        service = make_service(db_session, cache)
+        await service.submit_questionnaire(1, seeded_questionnaire, full_answers(QUESTIONS))  # C4
+        await service.merge_dialog_fields(
+            1, {"risk_tolerance": {"level": "C1", "evidence": "我完全不想亏钱"}}
+        )
+        profile = await ProfileRepository(db_session).get_by_user_id(1)
+        assert len(profile.source_trace["conflicts"]) == 1
+
+        await service.submit_questionnaire(1, seeded_questionnaire, full_answers(QUESTIONS))
+
+        profile = await ProfileRepository(db_session).get_by_user_id(1)
+        assert profile.source_trace["conflicts"] == []
+        assert profile.source_trace["elements"]["risk_level"]["source"] == "问卷"

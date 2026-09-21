@@ -92,7 +92,7 @@ class TestMergeHoldingsFields:
         assert profile.source_mix == {"questionnaire": 0.3333, "dialog": 0.3333, "holdings": 0.3333}
         assert float(profile.confidence) == 0.95
 
-    async def test_conflict_keeps_original_summary_without_version_bump(self, db_session, cache):
+    async def test_conflict_keeps_original_summary_and_persists_for_report(self, db_session, cache):
         service = make_service(db_session, cache)
         await ProfileRepository(db_session).save(
             UserProfile(
@@ -110,4 +110,11 @@ class TestMergeHoldingsFields:
         assert update["conflict"] is True and update["applied"] is False
         profile = await ProfileRepository(db_session).get_by_user_id(1)
         assert profile.holding_habit_summary == "长期持有蓝筹(对话来源)"  # 保留原值待确认
-        assert profile.version == 1  # 无贡献不递增版本
+        # US-04:冲突持久化进 source_trace,供画像报告披露;冲突轮也递增版本留痕(BR-IMG-06)
+        assert profile.version == 2
+        conflicts = profile.source_trace["conflicts"]
+        assert len(conflicts) == 1
+        assert conflicts[0]["field"] == "holding_habit_summary"
+        assert conflicts[0]["current"] == "长期持有蓝筹(对话来源)"
+        assert conflicts[0]["proposed"] == "频繁换手,重仓个股。"
+        assert conflicts[0]["source"] == "持仓"

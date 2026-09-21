@@ -1,6 +1,8 @@
-"""画像业务编排:问卷作答 → 风险等级与画像要素(BR-IMG-01/02/03,UC-01)。
+"""画像业务编排:问卷作答 / 对话合并 / 持仓合并 → 风险等级与画像要素(BR-IMG-01/02/03,UC-01)。
 
 仅做编排:评分规则在 risk_scoring,数据访问在 Repository,缓存经 app/cache。
+US-04:各来源采纳/冲突的逐要素溯源(source/quote/version/时间戳)写入 user_profiles.source_trace,
+待确认冲突保留披露,由画像报告展示、用户确认或修正(BR-IMG-05、BR-DAT-04)。
 """
 
 from decimal import Decimal
@@ -14,26 +16,33 @@ from app.models.user_profile import RISK_LEVEL_LABELS, RiskLevel, UserProfile
 from app.repositories.profile_repo import ProfileRepository
 from app.repositories.questionnaire_repo import QuestionnaireRepository
 from app.services.holdings_analysis import risk_deviation
+from app.services.profile_report import (
+    TRACE_SOURCE_DIALOG,
+    TRACE_SOURCE_HOLDINGS,
+    TRACE_SOURCE_QUESTIONNAIRE,
+    build_trace_entry,
+    ensure_trace_structure,
+    incomplete_sources,
+    remove_conflict,
+    set_element_trace,
+    upsert_conflict,
+)
 from app.services.risk_scoring import evaluate_answers, extract_profile_fields
 
 # 三来源仅问卷一种已收集时的画像置信度(UC-01 扩展 2a:允许先以低置信度画像继续)
 QUESTIONNAIRE_ONLY_CONFIDENCE = Decimal("0.60")
 
-# 对话来源置信度(US-02):仅对话 0.55(定性表述弱于结构化问卷);问卷+对话 0.85
+# 对话来源置信度(US-02):仅对话 0.55(定性表述弱于结构化问卷);多来源时与问卷/持仓共用
+# 两来源 0.85 / 三来源 0.95(_confidence_for_sources,requirements.md v1.3)
 DIALOG_ONLY_CONFIDENCE = Decimal("0.55")
-QUESTIONNAIRE_DIALOG_CONFIDENCE = Decimal("0.85")
 
 # 持仓来源置信度(US-03):仅持仓 0.50(客观数据但解读有限);两来源 0.85;三来源 0.95
 HOLDINGS_ONLY_CONFIDENCE = Decimal("0.50")
 TWO_SOURCE_CONFIDENCE = Decimal("0.85")
 THREE_SOURCE_CONFIDENCE = Decimal("0.95")
 
-# BR-IMG-03:画像建模三来源(不互相覆盖丢失,来源权重见 source_mix)
-ALL_PROFILE_SOURCES = ["问卷", "对话", "持仓"]
-SOURCE_KEY_TO_LABEL = {"questionnaire": "问卷", "dialog": "对话", "holdings": "持仓"}
-
-# BR-IMG-03:仅问卷单一来源时,提示其余来源信息不完整
-INCOMPLETE_SOURCES = ["对话", "持仓"]
+# 问卷提交覆盖的画像要素(结构化重测权威覆盖;重提时删除对应待确认冲突,US-04)
+QUESTIONNAIRE_ELEMENT_FIELDS = ["risk_level", "return_expectation", "investment_horizon"]
 
 
 class ProfileService:
@@ -79,7 +88,8 @@ class ProfileService:
         )
 
         profile = await self.profile_repo.get_by_user_id(user_id)
-        if profile is None:
+        is_new = profile is None
+        if is_new:
             profile = UserProfile(user_id=user_id, version=1)
         else:
             profile.version += 1  # BR-IMG-06:画像更新以版本递增留痕
@@ -87,14 +97,40 @@ class ProfileService:
         profile.return_expectation_low = _as_decimal(fields["return_expectation_low"])
         profile.return_expectation_high = _as_decimal(fields["return_expectation_high"])
         profile.investment_horizon = fields["investment_horizon"]
-        profile.holding_habit_summary = None  # 持仓习惯来自 US-03,问卷阶段为空
-        profile.source_mix = {"questionnaire": 1.0}
-        profile.confidence = QUESTIONNAIRE_ONLY_CONFIDENCE
+        if is_new:
+            profile.holding_habit_summary = None  # 持仓习惯来自 US-03,仅新建画像时为空
+        # BR-IMG-03:重提问卷不覆盖持仓来源结论;来源集合并入问卷后均分权重
+        mix = {"questionnaire": 1.0}
+        if not is_new:
+            mix = dict(profile.source_mix or {})
+            mix["questionnaire"] = 0.0
+            weight = round(1.0 / len(mix), 4)
+            mix = {key: weight for key in mix}
+        profile.source_mix = mix
+        profile.confidence = (
+            QUESTIONNAIRE_ONLY_CONFIDENCE if len(mix) == 1 else _confidence_for_sources(len(mix))
+        )
         profile.confirmed = False  # BR-IMG-05:确认/修正属 US-04 流程
+        # BR-DAT-04 溯源:问卷贡献三要素;重提覆盖的要素删除对应待确认冲突
+        trace = ensure_trace_structure(profile.source_trace)
+        for field in QUESTIONNAIRE_ELEMENT_FIELDS:
+            entry = build_trace_entry(TRACE_SOURCE_QUESTIONNAIRE, None, profile.version)
+            trace = set_element_trace(trace, field, entry)
+            trace = remove_conflict(trace, field)
+        profile.source_trace = trace
         await self.profile_repo.save(profile)
         await self.session.commit()
         await self.cache.delete(profile_cache_key(user_id))
-        return _submit_result(questionnaire.id, total, risk_level, dimension_scores, fields, profile.version)
+        return _submit_result(
+            questionnaire.id,
+            total,
+            risk_level,
+            dimension_scores,
+            fields,
+            profile.version,
+            mix,
+            profile.holding_habit_summary,
+        )
 
     async def get_latest_response(self, user_id: int) -> dict | None:
         response = await self.questionnaire_repo.get_latest_response(user_id)
@@ -124,30 +160,45 @@ class ProfileService:
             profile = UserProfile(user_id=user_id, version=1)
 
         updates = build_dialog_updates(profile, slots)
+        # 采纳(含与现有一致的同值确认,对话来源已收集,BR-IMG-03)即算贡献;冲突另计
         contributed = [u for u in updates if u["applied"]]
-        if contributed:
+        has_conflicts = any(not u["applied"] for u in updates)
+        if contributed or has_conflicts:
             if not is_new:
                 profile.version += 1  # BR-IMG-06:画像更新以版本递增留痕
             for update in updates:
                 if update["applied"] and update["after"] != update["before"]:
                     _apply_dialog_update(profile, update)
-            # BR-IMG-03:多来源综合建模,来源权重均分,置信度提升
-            has_questionnaire = bool((profile.source_mix or {}).get("questionnaire"))
-            if has_questionnaire:
-                profile.source_mix = {"questionnaire": 0.5, "dialog": 0.5}
-                profile.confidence = QUESTIONNAIRE_DIALOG_CONFIDENCE
-            else:
-                profile.source_mix = {"dialog": 1.0}
-                profile.confidence = DIALOG_ONLY_CONFIDENCE
+            # BR-IMG-03:多来源综合建模,来源集合均分权重,置信度随来源数提升
+            mix = dict(profile.source_mix or {})
+            mix["dialog"] = 0.0
+            weight = round(1.0 / len(mix), 4)
+            profile.source_mix = {key: weight for key in mix}
+            profile.confidence = DIALOG_ONLY_CONFIDENCE if len(mix) == 1 else _confidence_for_sources(len(mix))
             profile.confirmed = False  # BR-IMG-05:确认/修正属 US-04 流程
+            # BR-DAT-04 溯源:采纳项写入来源与原文引用;冲突项记录待确认冲突(US-04 报告披露)
+            trace = ensure_trace_structure(profile.source_trace)
+            for update in updates:
+                if update["applied"]:
+                    if update["after"] != update["before"]:
+                        entry = build_trace_entry(TRACE_SOURCE_DIALOG, update["quote"], profile.version)
+                        trace = set_element_trace(trace, update["field"], entry)
+                else:
+                    trace = upsert_conflict(
+                        trace,
+                        update["field"],
+                        update["before"],
+                        update["after"],
+                        TRACE_SOURCE_DIALOG,
+                        update["quote"],
+                        profile.version,
+                    )
+            profile.source_trace = trace
             await self.profile_repo.save(profile)
             await self.session.commit()
             await self.cache.delete(profile_cache_key(user_id))
 
-        incomplete = [
-            label for key, label in SOURCE_KEY_TO_LABEL.items() if key not in (profile.source_mix or {})
-        ]
-        return {"profile_updates": updates, "incomplete_sources": incomplete}
+        return {"profile_updates": updates, "incomplete_sources": incomplete_sources(profile.source_mix)}
 
     async def merge_holdings_fields(
         self,
@@ -195,7 +246,8 @@ class ProfileService:
         )
 
         contributed = [u for u in updates if u["applied"] and u["after"] != u["before"]]
-        if contributed:
+        has_conflicts = any(not u["applied"] for u in updates)
+        if contributed or has_conflicts:
             if not is_new:
                 profile.version += 1  # BR-IMG-06:画像更新以版本递增留痕
             mix = dict(profile.source_mix or {})
@@ -205,6 +257,25 @@ class ProfileService:
             profile.source_mix = {key: weight for key in present}
             profile.confidence = _confidence_for_sources(len(present))
             profile.confirmed = False  # BR-IMG-05:确认/修正属 US-04 流程
+            # BR-DAT-04 溯源:无画像时风险等级来自持仓;持仓习惯采纳/冲突记入 trace(US-04 报告披露)
+            trace = ensure_trace_structure(profile.source_trace)
+            for update in updates:
+                if update["applied"]:
+                    if update["after"] != update["before"]:
+                        trace = set_element_trace(
+                            trace, update["field"], build_trace_entry(TRACE_SOURCE_HOLDINGS, None, profile.version)
+                        )
+                else:
+                    trace = upsert_conflict(
+                        trace,
+                        update["field"],
+                        update["before"],
+                        update["after"],
+                        TRACE_SOURCE_HOLDINGS,
+                        None,
+                        profile.version,
+                    )
+            profile.source_trace = trace
             await self.profile_repo.save(profile)
             await self.session.commit()
             await self.cache.delete(profile_cache_key(user_id))
@@ -223,10 +294,11 @@ class ProfileService:
                     "偏差明显,建议在画像报告中确认或修正风险等级"
                 ),
             }
-        incomplete = [
-            label for key, label in SOURCE_KEY_TO_LABEL.items() if key not in (profile.source_mix or {})
-        ]
-        return {"profile_updates": updates, "incomplete_sources": incomplete, "risk_deviation": deviation}
+        return {
+            "profile_updates": updates,
+            "incomplete_sources": incomplete_sources(profile.source_mix),
+            "risk_deviation": deviation,
+        }
 
 
 def _confidence_for_sources(count: int) -> Decimal:
@@ -272,6 +344,8 @@ def _submit_result(
     dimension_scores: dict[str, int],
     fields: dict,
     version: int,
+    source_mix: dict,
+    holding_habit_summary: str | None,
 ) -> dict:
     return {
         "questionnaire_id": questionnaire_id,
@@ -285,13 +359,15 @@ def _submit_result(
             "return_expectation_low": _to_float(fields["return_expectation_low"]),
             "return_expectation_high": _to_float(fields["return_expectation_high"]),
             "investment_horizon": fields["investment_horizon"],
-            "holding_habit_summary": None,
-            "source_mix": {"questionnaire": 1.0},
-            "confidence": float(QUESTIONNAIRE_ONLY_CONFIDENCE),
+            "holding_habit_summary": holding_habit_summary,  # 重提场景保留持仓来源结论(BR-IMG-03)
+            "source_mix": source_mix,
+            "confidence": float(
+                QUESTIONNAIRE_ONLY_CONFIDENCE if len(source_mix) == 1 else _confidence_for_sources(len(source_mix))
+            ),
             "confirmed": False,
             "version": version,
         },
-        "incomplete_sources": INCOMPLETE_SOURCES,
+        "incomplete_sources": incomplete_sources(source_mix),
     }
 
 def build_dialog_updates(profile: UserProfile, slots: dict) -> list[dict]:
