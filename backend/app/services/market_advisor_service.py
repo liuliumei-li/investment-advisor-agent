@@ -100,9 +100,15 @@ class MarketAdvisorService:
         self.advice_repo = advice_repo
         self.session = session
 
-    async def analyze(self, user_id: int, session_id: int, content: str) -> dict:
+    async def analyze(self, user_id: int, session_id: int, content: str, progress=None) -> dict:
+        """progress:可选异步回调 async fn(step: dict),SSE 逐段推送研判进度(US-19 基础)。"""
         started = time.perf_counter()
         trace: list[dict] = []
+
+        async def _step(step: dict) -> None:
+            trace.append(step)
+            if progress is not None:
+                await progress(step)
 
         profile = await self.profile_repo.get_by_user_id(user_id)
         if profile is None:
@@ -112,7 +118,7 @@ class MarketAdvisorService:
         stock_cap = stock_cap_for_level(profile.risk_level)
 
         snapshot = await self.market_data.fetch_market_snapshot()
-        trace.append({"step": "取数", "detail": f"行情 {len(snapshot['quotes'])} 条,快讯 {len(snapshot['news'])} 条,"
+        await _step({"step": "取数", "detail": f"行情 {len(snapshot['quotes'])} 条,快讯 {len(snapshot['news'])} 条,"
                       f"研报 {len(snapshot['research'])} 条,降级源 {len(snapshot['degraded'])} 个"})
 
         provided = self._provided_points(snapshot)
@@ -126,13 +132,13 @@ class MarketAdvisorService:
         except (ValueError, TypeError) as exc:
             logger.warning("研判草稿结构无效:%s", exc)
             raise ValidationFailed("研判生成结果结构异常,请重试") from exc
-        trace.append(
+        await _step(
             {"step": "生成", "detail": f"影响因素 {len(draft.key_factors)} 条,逻辑链 {len(draft.logic_chain)} 步"}
         )
 
         fields = draft.model_dump()
         validation = validate_market_advice(fields, provided)
-        trace.append({"step": "校验", "detail": f"幻觉检测 {len(validation['issues'])} 条问题"})
+        await _step({"step": "校验", "detail": f"幻觉检测 {len(validation['issues'])} 条问题"})
         if validation["rejected"]:
             raise ValidationFailed("研判结果的关键引用无法通过数据校验,请稍后重试")
         if validation["issues"]:
@@ -145,7 +151,7 @@ class MarketAdvisorService:
 
         audit = audit_advice(fields)
         fields = audit["fields"]
-        trace.append({"step": "合规", "detail": f"命中 {len(audit['matched_rules'])} 条规则,动作 {audit['action']}"})
+        await _step({"step": "合规", "detail": f"命中 {len(audit['matched_rules'])} 条规则,动作 {audit['action']}"})
 
         position = fields["position_suggestion"]
         position["risk_level"] = profile.risk_level.value

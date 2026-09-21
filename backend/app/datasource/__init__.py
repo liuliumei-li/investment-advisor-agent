@@ -4,7 +4,9 @@
 - 行情:东方财富指数快照;快讯:新浪 7x24;研报:东方财富研报列表。
 """
 
-from app.cache.redis_client import get_cache
+from fastapi import Depends
+
+from app.cache.redis_client import Cache, get_cache
 from app.datasource.base import DataPoint, DataSource
 from app.datasource.eastmoney import EastmoneyQuoteSource, EastmoneyResearchSource
 from app.datasource.market_data import MarketDataService
@@ -12,10 +14,10 @@ from app.datasource.sina import SinaNewsSource
 from app.datasource.skillhub import SkillHubSource
 
 
-def get_market_data_service(cache=None) -> MarketDataService:
-    """FastAPI 依赖:默认三源组合(测试经 dependency_overrides 替换)。"""
+def get_market_data_service(cache: Cache = Depends(get_cache)) -> MarketDataService:
+    """FastAPI 依赖:默认三源组合(测试经 dependency_overrides 替换为假源)。"""
     return MarketDataService(
-        cache or get_cache(),
+        cache,
         quote_source=EastmoneyQuoteSource(),
         news_source=SinaNewsSource(),
         research_source=EastmoneyResearchSource(),

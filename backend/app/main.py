@@ -5,7 +5,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.api.routers import auth, profile
+from app.api.routers import advice, auth, chat, profile
 from app.core.config import settings
 from app.core.exceptions import BizError
 from app.core.response import TraceIdMiddleware, error_response
@@ -35,6 +35,8 @@ def create_app() -> FastAPI:
     app.add_middleware(TraceIdMiddleware)
     app.include_router(auth.router)
     app.include_router(profile.router)
+    app.include_router(chat.router)
+    app.include_router(advice.router)
     app.add_exception_handler(BizError, biz_error_handler)
     app.add_exception_handler(RequestValidationError, validation_error_handler)
     app.add_exception_handler(StarletteHTTPException, http_exception_handler)
