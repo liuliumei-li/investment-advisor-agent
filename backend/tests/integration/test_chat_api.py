@@ -41,9 +41,24 @@ class FakeSource(DataSource):
         return self.points
 
 
-def install_fakes(cache) -> None:
+INDUSTRY_DRAFT = {
+    "industry_review": "半导体板块涨 7.97%,主力净流入明显,政策催化,景气度上行。",
+    "key_factors": [
+        {"title": "景气度", "detail": "板块涨 7.97%。", "source_refs": ["来源1"]},
+        {"title": "资金流向", "detail": "主力净流入明显。", "source_refs": ["来源1"]},
+        {"title": "政策催化", "detail": "央行开展逆回购操作。", "source_refs": ["来源2"]},
+    ],
+    "logic_chain": [{"step": "1", "content": "板块上涨 7.97%。", "source_refs": ["来源1"]}],
+    "conclusion": "半导体板块涨 7.97%,资金与政策共振,可适当关注。",
+    "risk_tips": "注意板块回调与政策不及预期风险。",
+    "position_suggestion": {"action": "标配", "reason": "当前风险等级适配板块波动"},
+    "return_expectation": {"low": 8, "high": 15},
+}
+
+
+def install_fakes(cache, drafts=None) -> None:
     """覆盖 LLM 与数据源依赖:FakeLLM + 假数据源(与 conftest 共用同一 fakeredis)。"""
-    app.dependency_overrides[get_llm_client] = lambda: FakeLLM([DRAFT])
+    app.dependency_overrides[get_llm_client] = lambda: FakeLLM(list(drafts or [DRAFT]))
     app.dependency_overrides[get_market_data_service] = lambda: MarketDataService(
         cache,
         quote_source=FakeSource("新浪财经行情", [QUOTE_POINT]),
@@ -97,6 +112,37 @@ class TestChatApi:
         assert resp.status_code == 400
         assert resp.json()["code"] == 40001
         assert "尚未开放" in resp.json()["message"]
+
+    async def test_industry_scenario_sse_flow(self, client, cache, seeded_questionnaire):
+        """US-07:industry 会话 SSE 全链路(meta 携带行业研究智能体)。"""
+        install_fakes(cache, drafts=[INDUSTRY_DRAFT])
+        headers = await _auth_headers(client, username="industry_flow")
+        await _setup_profile(client, headers, seeded_questionnaire)
+        session = (
+            await client.post("/api/v1/chat/sessions", json={"scenario": "industry"}, headers=headers)
+        ).json()
+        assert session["code"] == 0
+        session_id = session["data"]["session_id"]
+
+        streamed = ""
+        async with client.stream(
+            "POST", f"/api/v1/chat/sessions/{session_id}/messages",
+            json={"content": "分析一下半导体板块"}, headers=headers,
+        ) as response:
+            async for line in response.aiter_lines():
+                streamed += line + "\n"
+        events = _parse_sse(streamed)
+        kinds = [event for event, _ in events]
+        assert kinds[0] == "meta" and kinds[-2] == "result" and kinds[-1] == "done"
+        meta = events[0][1]
+        assert meta["scenario"] == "industry"
+        assert meta["agents"] == ["行业研究"]
+        result = next(data for event, data in events if event == "result")
+        detail = (
+            await client.get(f"/api/v1/advice/{result['advice_id']}", headers=headers)
+        ).json()["data"]
+        assert detail["scenario"] == "industry"
+        assert detail["position_suggestion"]["stock_cap"] == "60%~80%"
 
     async def test_full_sse_flow_advice_persisted(self, client, cache, seeded_questionnaire):
         install_fakes(cache)

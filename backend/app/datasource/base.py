@@ -17,7 +17,7 @@ SOURCE_TYPE_RESEARCH = "research"
 SOURCE_TYPE_PROFILE = "profile"
 
 # BR-DAT-02 数据源白名单:建议引用来源仅允许此清单(新增来源须同步本清单与架构文档)
-SOURCE_WHITELIST = {"新浪财经行情", "东方财富研报", "新浪财经快讯", "同花顺问财SkillHub", "用户画像"}
+SOURCE_WHITELIST = {"新浪财经行情", "东方财富研报", "东方财富板块", "新浪财经快讯", "同花顺问财SkillHub", "用户画像"}
 
 
 @dataclass

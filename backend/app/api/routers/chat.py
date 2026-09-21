@@ -24,6 +24,7 @@ from app.repositories.chat_repo import ChatRepository
 from app.repositories.profile_repo import ProfileRepository
 from app.schemas.chat import ChatMessageRequest, ChatSessionCreateRequest
 from app.services.chat_service import ChatService
+from app.services.industry_advisor_service import IndustryAdvisorService
 from app.services.market_advisor_service import MarketAdvisorService
 
 router = APIRouter(prefix="/api/v1/chat", tags=["chat"])
@@ -34,14 +35,15 @@ def get_chat_service(
     llm: LLMClient = Depends(get_llm_client),
     market_data: MarketDataService = Depends(get_market_data_service),
 ) -> ChatService:
-    advisor = MarketAdvisorService(
-        llm=llm,
-        market_data=market_data,
-        profile_repo=ProfileRepository(session),
-        advice_repo=AdviceRepository(session),
-        session=session,
+    profile_repo = ProfileRepository(session)
+    advice_repo = AdviceRepository(session)
+    market_advisor = MarketAdvisorService(
+        llm=llm, market_data=market_data, profile_repo=profile_repo, advice_repo=advice_repo, session=session
     )
-    return ChatService(ChatRepository(session), advisor, AdviceRepository(session), session)
+    industry_advisor = IndustryAdvisorService(
+        llm=llm, market_data=market_data, profile_repo=profile_repo, advice_repo=advice_repo, session=session
+    )
+    return ChatService(ChatRepository(session), market_advisor, industry_advisor, advice_repo, session)
 
 
 @router.post("/sessions")
@@ -72,7 +74,8 @@ async def send_chat_message(
     service: ChatService = Depends(get_chat_service),
 ):
     # 流开始前的前置校验:会话归属/场景开放度以 HTTP 状态码返回(40401/40001)
-    await service.validate_session(user_id, session_id)
+    session_row = await service.validate_session(user_id, session_id)
+    agents = ["宏观研究"] if session_row.scenario is Scenario.MARKET else ["行业研究"]
 
     async def event_stream():
         queue: asyncio.Queue = asyncio.Queue()
@@ -80,7 +83,7 @@ async def send_chat_message(
         async def progress(step: dict) -> None:
             await queue.put(step)
 
-        yield _sse("meta", {"session_id": session_id, "scenario": "market", "agents": ["宏观研究"]})
+        yield _sse("meta", {"session_id": session_id, "scenario": session_row.scenario.value, "agents": agents})
         task = asyncio.create_task(service.send_message(user_id, session_id, payload.content, progress))
         while not task.done():
             try:

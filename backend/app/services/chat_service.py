@@ -12,26 +12,30 @@ from app.core.exceptions import NotFound, ValidationFailed
 from app.models.chat import SCENARIO_LABELS, ChatMessage, ChatSession, MessageRole, Scenario
 from app.repositories.advice_repo import AdviceRepository
 from app.repositories.chat_repo import ChatRepository
+from app.services.industry_advisor_service import IndustryAdvisorService
 from app.services.market_advisor_service import MarketAdvisorService
 
-# US-06 已开放场景(BR-ADV-03 六类场景随迭代开放)
-OPEN_SCENARIOS = {Scenario.MARKET}
+# 已开放场景(BR-ADV-03 六类场景随迭代开放;US-06 大盘研判、US-07 板块分析)
+OPEN_SCENARIOS = {Scenario.MARKET, Scenario.INDUSTRY}
 
 
 class ChatService:
-    """咨询会话编排:校验 → 落消息 → 调研判 → 回填助手消息(不碰 SQL,经仓储)。"""
+    """咨询会话编排:校验 → 落消息 → 按场景分派 advisor → 回填助手消息(不碰 SQL,经仓储)。"""
 
     def __init__(
         self,
         chat_repo: ChatRepository,
-        advisor: MarketAdvisorService,
+        market_advisor: MarketAdvisorService,
+        industry_advisor: IndustryAdvisorService | None,
         advice_repo: AdviceRepository,
         session: AsyncSession,
     ):
         self.chat_repo = chat_repo
-        self.advisor = advisor
         self.advice_repo = advice_repo
         self.session = session
+        self.advisors: dict[Scenario, object] = {Scenario.MARKET: market_advisor}
+        if industry_advisor is not None:
+            self.advisors[Scenario.INDUSTRY] = industry_advisor
 
     async def create_session(self, user_id: int, scenario: Scenario) -> dict:
         if scenario not in OPEN_SCENARIOS:
@@ -40,9 +44,9 @@ class ChatService:
         await self.session.commit()
         return {"session_id": session_row.id, "scenario": session_row.scenario.value}
 
-    async def validate_session(self, user_id: int, session_id: int) -> None:
-        """流开始前的前置校验(404/40001 直接以 HTTP 状态码返回,而非 SSE error 事件)。"""
-        await self._owned_session(user_id, session_id)
+    async def validate_session(self, user_id: int, session_id: int) -> ChatSession:
+        """流开始前的前置校验(404/40001 直接以 HTTP 状态码返回,而非 SSE error 事件);返回会话行。"""
+        return await self._owned_session(user_id, session_id)
 
     async def send_message(self, user_id: int, session_id: int, content: str, progress=None) -> dict:
         """发送咨询消息并生成建议(progress 为可选异步回调,SSE 逐段推送研判进度)。"""
@@ -50,7 +54,8 @@ class ChatService:
         await self.chat_repo.add_message(
             ChatMessage(session_id=session_id, user_id=user_id, role=MessageRole.USER, content=content.strip())
         )
-        result = await self.advisor.analyze(user_id, session_id, content, progress=progress)
+        advisor = self.advisors[session_row.scenario]
+        result = await advisor.analyze(user_id, session_id, content, progress=progress)
         await self.chat_repo.add_message(
             ChatMessage(
                 session_id=session_id,
