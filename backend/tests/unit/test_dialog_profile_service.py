@@ -195,6 +195,35 @@ class TestMergeDialogFields:
         assert profile.source_mix == {"questionnaire": 0.5, "dialog": 0.5}
         assert float(profile.confidence) == 0.85
         assert profile.version == 2  # BR-IMG-06 版本留痕
+        # US-04 溯源:冲突持久化供画像报告披露;采纳的持仓习惯写入对话来源 trace
+        trace = profile.source_trace
+        conflicts = trace["conflicts"]
+        assert len(conflicts) == 1
+        assert conflicts[0]["field"] == "risk_level"
+        assert conflicts[0]["current"] == "C4" and conflicts[0]["proposed"] == "C1"
+        assert conflicts[0]["quote"] == "我完全不想亏钱"
+        habit = trace["elements"]["holding_habit_summary"]
+        assert habit["source"] == "对话"
+        assert habit["quote"] == "我主要拿的是白酒股"
+
+    async def test_applied_updates_write_trace_with_quote_and_conflict_upserted(
+        self, db_session, cache, seeded_questionnaire
+    ):
+        profile_service = make_profile_service(db_session, cache)
+        await profile_service.submit_questionnaire(1, seeded_questionnaire, full_answers(QUESTIONS))  # C4
+        # 首轮冲突(C1);次轮再主张(C2)→ 同一字段只保留最新一条冲突
+        await profile_service.merge_dialog_fields(
+            1, {"risk_tolerance": {"level": "C1", "evidence": "我完全不想亏钱"}}
+        )
+        await profile_service.merge_dialog_fields(
+            1, {"risk_tolerance": {"level": "C2", "evidence": "回撤最多 10% 到 20%"}}
+        )
+        profile = await ProfileRepository(db_session).get_by_user_id(1)
+        conflicts = profile.source_trace["conflicts"]
+        assert len(conflicts) == 1
+        assert conflicts[0]["proposed"] == "C2"
+        assert conflicts[0]["quote"] == "回撤最多 10% 到 20%"
+        assert profile.risk_level == RiskLevel.C4  # 冲突始终保留原值
 
     async def test_consistent_dialog_merges_without_conflict(self, db_session, cache, seeded_questionnaire):
         profile_service = make_profile_service(db_session, cache)

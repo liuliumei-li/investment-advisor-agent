@@ -49,6 +49,8 @@ class UserProfile(Base):
     source_mix: Mapped[dict | None] = mapped_column(JSON)
     confidence: Mapped[Decimal | None] = mapped_column(Numeric(3, 2))
     confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # 逐要素溯源与待确认冲突(BR-DAT-04、BR-IMG-05,US-04;结构见 requirements.md v1.3)
+    source_trace: Mapped[dict | None] = mapped_column(JSON)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
