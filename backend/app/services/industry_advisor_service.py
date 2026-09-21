@@ -37,7 +37,8 @@ SYSTEM_PROMPT = (
     "你是证券投顾系统的行业研究智能体,基于提供的板块行情、财经快讯与研报数据做行业/概念板块分析。\n"
     "输出要求(BR-ADV-01 四要素):\n"
     "1. industry_review:板块整体解读,必须覆盖三个维度——景气度(涨跌幅与研报观点)、"
-    "资金流向(主力净流入)、政策催化(快讯/研报中的政策信息),并注明数据时效;\n"
+    "资金流向(主力净流入)、政策催化(快讯/研报中的政策信息),并注明数据时效;"
+    "若提供数据中缺少板块行情,基于大盘背景与资讯/研报做定性分析,并明确注明「板块行情数据缺失,资金流向维度暂缺」;\n"
     "2. key_factors:关键影响因素 2~4 条,每条 title/detail/source_refs(引用编号);\n"
     "3. logic_chain:逻辑链条 3~5 步,每步 content/source_refs(支持逐级展开);\n"
     "4. conclusion:核心结论一段话,含对用户指定板块的配置观点;\n"
@@ -66,6 +67,19 @@ class IndustryAdviceDraft(BaseModel):
     def _join_risk_tips(cls, value):
         if isinstance(value, list):
             return "\n".join(str(item) for item in value if str(item).strip())
+        return value
+
+    @field_validator("industry_review", mode="before")
+    @classmethod
+    def _unwrap_review(cls, value):
+        # 真实 LLM 可能把 review 输出为对象(如 {"summary": "..."}):取首个字符串值兜底
+        if isinstance(value, dict):
+            for key in ("summary", "content", "text"):
+                if isinstance(value.get(key), str) and value[key].strip():
+                    return value[key]
+            for item in value.values():
+                if isinstance(item, str) and item.strip():
+                    return item
         return value
 
 
@@ -208,7 +222,7 @@ class IndustryAdvisorService:
     def _provided_points(snapshot: dict) -> list[dict]:
         points: list[dict] = []
         ref_index = 1
-        for group in (snapshot["boards"], snapshot["news"], snapshot["research"]):
+        for group in (snapshot["quotes"], snapshot["boards"], snapshot["news"], snapshot["research"]):
             for point in group:
                 points.append(
                     {
