@@ -8,6 +8,7 @@
 """
 
 import logging
+import re
 import time
 from datetime import datetime, timezone
 
@@ -47,6 +48,16 @@ SYSTEM_PROMPT = (
     "- 禁止出现保证收益、稳赚、无风险等承诺性表述;\n"
     "- 输出 JSON 对象,不要输出其他文字。"
 )
+
+
+def parse_return_expectation(value):
+    """容错解析收益预期:真实 LLM 可能输出字符串「3.0%~8.0%」;解析失败返回 None。"""
+    if isinstance(value, str):
+        match = re.match(r"^\s*([\d.]+)\s*%?\s*[~\-–~]\s*([\d.]+)\s*%?\s*$", value)
+        if match:
+            return {"low": float(match.group(1)), "high": float(match.group(2))}
+        return None
+    return value
 
 
 class KeyFactor(BaseModel):
@@ -91,6 +102,11 @@ class MarketAdviceDraft(BaseModel):
         if isinstance(value, list):
             return "\n".join(str(item) for item in value if str(item).strip())
         return value
+
+    @field_validator("return_expectation", mode="before")
+    @classmethod
+    def _parse_return(cls, value):
+        return parse_return_expectation(value)
 
 
 class MarketAdvisorService:

@@ -108,7 +108,7 @@ class TestChatApi:
 
     async def test_other_scenario_not_open(self, client):
         headers = await _auth_headers(client)
-        resp = await client.post("/api/v1/chat/sessions", json={"scenario": "stock"}, headers=headers)
+        resp = await client.post("/api/v1/chat/sessions", json={"scenario": "etf"}, headers=headers)
         assert resp.status_code == 400
         assert resp.json()["code"] == 40001
         assert "尚未开放" in resp.json()["message"]

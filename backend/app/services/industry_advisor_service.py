@@ -28,6 +28,7 @@ from app.services.market_advisor_service import (
     PositionSuggestion,
     ReturnExpectation,
     _flatten_numbers,
+    parse_return_expectation,
 )
 from app.services.profile_report import serialize_profile_compact, stock_cap_for_level
 
@@ -68,6 +69,11 @@ class IndustryAdviceDraft(BaseModel):
         if isinstance(value, list):
             return "\n".join(str(item) for item in value if str(item).strip())
         return value
+
+    @field_validator("return_expectation", mode="before")
+    @classmethod
+    def _parse_return(cls, value):
+        return parse_return_expectation(value)
 
     @field_validator("industry_review", mode="before")
     @classmethod

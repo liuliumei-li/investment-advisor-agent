@@ -26,6 +26,7 @@ from app.schemas.chat import ChatMessageRequest, ChatSessionCreateRequest
 from app.services.chat_service import ChatService
 from app.services.industry_advisor_service import IndustryAdvisorService
 from app.services.market_advisor_service import MarketAdvisorService
+from app.services.stock_advisor_service import StockAdvisorService
 
 router = APIRouter(prefix="/api/v1/chat", tags=["chat"])
 
@@ -43,7 +44,10 @@ def get_chat_service(
     industry_advisor = IndustryAdvisorService(
         llm=llm, market_data=market_data, profile_repo=profile_repo, advice_repo=advice_repo, session=session
     )
-    return ChatService(ChatRepository(session), market_advisor, industry_advisor, advice_repo, session)
+    stock_advisor = StockAdvisorService(
+        llm=llm, profile_repo=profile_repo, advice_repo=advice_repo, session=session
+    )
+    return ChatService(ChatRepository(session), market_advisor, industry_advisor, stock_advisor, advice_repo, session)
 
 
 @router.post("/sessions")
@@ -75,7 +79,11 @@ async def send_chat_message(
 ):
     # 流开始前的前置校验:会话归属/场景开放度以 HTTP 状态码返回(40401/40001)
     session_row = await service.validate_session(user_id, session_id)
-    agents = ["宏观研究"] if session_row.scenario is Scenario.MARKET else ["行业研究"]
+    agents = {
+        Scenario.MARKET: ["宏观研究"],
+        Scenario.INDUSTRY: ["行业研究"],
+        Scenario.STOCK: ["个股研究"],
+    }[session_row.scenario]
 
     async def event_stream():
         queue: asyncio.Queue = asyncio.Queue()
