@@ -14,9 +14,10 @@ from app.repositories.advice_repo import AdviceRepository
 from app.repositories.chat_repo import ChatRepository
 from app.services.industry_advisor_service import IndustryAdvisorService
 from app.services.market_advisor_service import MarketAdvisorService
+from app.services.stock_advisor_service import StockAdvisorService
 
-# 已开放场景(BR-ADV-03 六类场景随迭代开放;US-06 大盘研判、US-07 板块分析)
-OPEN_SCENARIOS = {Scenario.MARKET, Scenario.INDUSTRY}
+# 已开放场景(BR-ADV-03 六类场景随迭代开放;US-06 大盘、US-07 板块、US-08 个股)
+OPEN_SCENARIOS = {Scenario.MARKET, Scenario.INDUSTRY, Scenario.STOCK}
 
 
 class ChatService:
@@ -27,6 +28,7 @@ class ChatService:
         chat_repo: ChatRepository,
         market_advisor: MarketAdvisorService,
         industry_advisor: IndustryAdvisorService | None,
+        stock_advisor: StockAdvisorService | None,
         advice_repo: AdviceRepository,
         session: AsyncSession,
     ):
@@ -36,6 +38,8 @@ class ChatService:
         self.advisors: dict[Scenario, object] = {Scenario.MARKET: market_advisor}
         if industry_advisor is not None:
             self.advisors[Scenario.INDUSTRY] = industry_advisor
+        if stock_advisor is not None:
+            self.advisors[Scenario.STOCK] = stock_advisor
 
     async def create_session(self, user_id: int, scenario: Scenario) -> dict:
         if scenario not in OPEN_SCENARIOS:

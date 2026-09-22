@@ -88,6 +88,60 @@ class EastmoneyBoardSource(DataSource):
         return points
 
 
+class EastmoneyFinanceSource(DataSource):
+    """个股主要财务指标(F10,US-08 基本面分析;datacenter-web 域不受 push2 限流影响)。"""
+
+    name = "东方财富财务数据"
+
+    def __init__(self, secucode: str, transport: httpx.AsyncBaseTransport | None = None):
+        self.secucode = secucode  # 形如 600519.SH
+        self.transport = transport
+
+    async def fetch(self) -> list[DataPoint]:
+        async with _client(transport=self.transport) as client:
+            try:
+                response = await client.get(
+                    "https://datacenter-web.eastmoney.com/api/data/v1/get",
+                    params={
+                        "reportName": "RPT_F10_FINANCE_MAINFINADATA",
+                        "columns": "ALL",
+                        "pageSize": "1",
+                        "pageNumber": "1",
+                        "filter": f'(SECUCODE="{self.secucode}")',
+                    },
+                )
+                rows = ((response.json() or {}).get("result") or {}).get("data") or []
+                if not rows:
+                    raise ValueError(f"F10 财务数据为空:{response.text[:80]}")
+            except (httpx.HTTPError, ValueError, TypeError) as exc:
+                raise self.unavailable(f"{type(exc).__name__}:{exc}") from exc
+        row = rows[0]
+
+        def num(key: str) -> str:
+            value = row.get(key)
+            return f"{value:.2f}" if isinstance(value, (int, float)) else str(value or "无数据")
+
+        data_point = (
+            f"{row.get('SECURITY_NAME_ABBR')}({row.get('SECURITY_CODE')}) {row.get('REPORT_DATE_NAME')}财务指标:"
+            f"基本EPS {num('EPSJB')}元,每股净资产 {num('BPS')}元,"
+            f"营业总收入 {num('TOTALOPERATEREVE')}元(同比 {num('TOTALOPERATEREVETZ')}%),"
+            f"归母净利润 {num('PARENTNETPROFIT')}元(同比 {num('PARENTNETPROFITTZ')}%),"
+            f"加权ROE {num('ROEJQ')}%,销售毛利率 {num('XSMLL')}%,资产负债率 {num('ZCFZL')}%"
+        )
+        return [
+            DataPoint(
+                source_name=self.name,
+                source_type=SOURCE_TYPE_RESEARCH,
+                data_point=data_point,
+                source_url=(
+                    "https://emweb.securities.eastmoney.com/PC_HSF10/NewFinanceAnalysis/Index"
+                    f"?type=web&code={self.secucode.replace('.', '')}"
+                ),
+                data_timestamp=f"{row.get('REPORT_DATE') or ''}",
+            )
+        ]
+
+
 class EastmoneyResearchSource(DataSource):
     """券商研报列表(JSONP 响应,剥壳取 data 字段)。"""
 
